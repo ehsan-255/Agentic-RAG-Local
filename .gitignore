@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Python
 __pycache__/
 *.py[cod]
@@ -64,6 +65,15 @@ vector_test.txt
 version.txt
 data_dir.txt
 listen_addresses.txt
+=======
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+>>>>>>> ee4b578bf2a45624bbe5312f94b982f7cd411dc1
 
 # Distribution / packaging
 .Python
@@ -135,6 +145,18 @@ celerybeat-schedule
 # SageMath parsed files
 *.sage.py
 
+<<<<<<< HEAD
+=======
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+>>>>>>> ee4b578bf2a45624bbe5312f94b982f7cd411dc1
 # Streamlit
 .streamlit/
 
@@ -157,4 +179,8 @@ data/embeddings/
 
 # Temporary files
 .DS_Store
+<<<<<<< HEAD
 Thumbs.db 
+=======
+Thumbs.db
+>>>>>>> ee4b578bf2a45624bbe5312f94b982f7cd411dc1

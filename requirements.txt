@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 aiofiles==24.1.0
 aiohappyeyeballs==2.4.4
 aiohttp==3.11.11
@@ -137,3 +138,29 @@ wrapt==1.17.1
 xxhash==3.5.0
 yarl==1.18.3
 zipp==3.21.0
+=======
+# Core dependencies
+python-dotenv>=1.0.0
+streamlit>=1.30.0
+openai>=1.10.0
+supabase>=2.0.0
+pydantic>=2.5.0
+pydantic-ai>=0.1.0
+logfire>=0.15.0
+
+# Web crawling
+crawl4ai>=0.1.0
+httpx>=0.25.0
+tenacity>=8.2.0
+requests>=2.31.0
+
+# Data processing
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Async support
+asyncio>=3.4.3
+
+# Typing support
+typing-extensions>=4.8.0
+>>>>>>> ee4b578bf2a45624bbe5312f94b982f7cd411dc1
