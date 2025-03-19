@@ -3,6 +3,7 @@ import re
 import requests
 import httpx
 import time
+import logging
 from xml.etree import ElementTree
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
@@ -22,12 +23,36 @@ import html2text
 from src.config import config
 from src.utils.validation import validate_url
 from src.crawling.batch_processor import EmbeddingBatchProcessor, LLMBatchProcessor
-from src.db.async_schema import (
-    add_documentation_source,
-    update_documentation_source,
-    add_site_page,
-    delete_documentation_source as db_delete_documentation_source
-)
+
+# Import db_utils for compatibility
+from src.db.db_utils import is_database_available
+
+# Import database functions - these will use the appropriate driver
+try:
+    from src.db.async_schema import (
+        add_documentation_source,
+        update_documentation_source,
+        add_site_page,
+        delete_documentation_source as db_delete_documentation_source
+    )
+except ImportError as e:
+    logging.error(f"Error importing async_schema: {e}")
+    # Create fallback functions to prevent crashes
+    async def add_documentation_source(*args, **kwargs):
+        logging.error("Database functions unavailable: add_documentation_source")
+        return None
+        
+    async def update_documentation_source(*args, **kwargs):
+        logging.error("Database functions unavailable: update_documentation_source")
+        return None
+        
+    async def add_site_page(*args, **kwargs):
+        logging.error("Database functions unavailable: add_site_page")
+        return None
+        
+    async def db_delete_documentation_source(*args, **kwargs):
+        logging.error("Database functions unavailable: delete_documentation_source")
+        return False
 
 @dataclass
 class CrawlConfig:
@@ -284,7 +309,7 @@ def filter_urls(urls: List[str], config: CrawlConfig) -> List[str]:
     
     return filtered_urls
 
-def get_urls_from_sitemap(sitemap_url: str, config: CrawlConfig) -> List[str]:
+async def get_urls_from_sitemap(sitemap_url: str, config: CrawlConfig) -> List[str]:
     """
     Extract URLs from a sitemap XML file with proper error handling.
     
@@ -302,46 +327,110 @@ def get_urls_from_sitemap(sitemap_url: str, config: CrawlConfig) -> List[str]:
         return []
     
     try:
-        # Get the sitemap content with timeout
-        response = requests.get(sitemap_url, timeout=30)
-        if response.status_code != 200:
-            print(f"Error fetching sitemap {sitemap_url}: {response.status_code}")
-            return []
-        
-        # Parse the XML
-        root = ElementTree.fromstring(response.content)
-        
-        # Extract URLs using namespace
-        namespaces = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
-        urls = []
-        
-        # Check if it's a sitemap index file
-        sitemap_elements = root.findall(".//sm:sitemap", namespaces) or root.findall(".//sitemap")
-        if sitemap_elements:
-            # It's a sitemap index, recursively fetch each sitemap
-            for sitemap_element in sitemap_elements:
-                sitemap_loc = sitemap_element.find(".//sm:loc", namespaces) or sitemap_element.find("loc")
-                if sitemap_loc is not None and sitemap_loc.text:
-                    sub_urls = get_urls_from_sitemap(sitemap_loc.text, config)
-                    urls.extend(sub_urls)
-        else:
-            # It's a regular sitemap, extract URLs
-            url_elements = root.findall(".//sm:url", namespaces) or root.findall(".//url")
-            for url_element in url_elements:
-                loc = url_element.find(".//sm:loc", namespaces) or url_element.find("loc")
-                if loc is not None and loc.text:
-                    urls.append(loc.text)
-        
-        # Filter URLs
-        return filter_urls(urls, config)
-    except requests.exceptions.RequestException as e:
+        # Get the sitemap content with timeout using async httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(sitemap_url)
+            if response.status_code != 200:
+                print(f"Error fetching sitemap {sitemap_url}: {response.status_code}")
+                return []
+            
+            # Print the first 200 chars of the response for debugging
+            print(f"Sitemap response preview: {response.text[:200]}...")
+            
+            # Parse the XML
+            try:
+                root = ElementTree.fromstring(response.text)
+            except ElementTree.ParseError as e:
+                print(f"XML parsing error for sitemap {sitemap_url}: {e}")
+                print(f"Response content type: {response.headers.get('content-type', 'unknown')}")
+                return []
+            
+            # Different sitemap namespaces that might be used
+            namespaces = {
+                'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9',
+                'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'
+            }
+            urls = []
+            
+            # Check if it's a sitemap index file (contains <sitemap> elements)
+            sitemap_elements = []
+            
+            # Try with namespace first
+            for ns_prefix, ns_uri in namespaces.items():
+                sitemap_elements = root.findall(f".//{ns_prefix}:sitemap", {ns_prefix: ns_uri})
+                if sitemap_elements:
+                    break
+            
+            # If no sitemap elements found with namespace, try without namespace
+            if not sitemap_elements:
+                sitemap_elements = root.findall(".//sitemap")
+            
+            # Also check for urlset tag with sitemap elements as direct children
+            if not sitemap_elements and root.tag.endswith('urlset'):
+                sitemap_elements = root.findall("./sitemap")
+            
+            if sitemap_elements:
+                # It's a sitemap index, recursively fetch each sitemap
+                print(f"Found sitemap index with {len(sitemap_elements)} sitemaps")
+                
+                for sitemap_element in sitemap_elements:
+                    # Try with namespace first for loc element
+                    sitemap_loc = None
+                    for ns_prefix, ns_uri in namespaces.items():
+                        sitemap_loc = sitemap_element.find(f".//{ns_prefix}:loc", {ns_prefix: ns_uri})
+                        if sitemap_loc is not None:
+                            break
+                    
+                    # If not found with namespace, try without namespace
+                    if sitemap_loc is None:
+                        sitemap_loc = sitemap_element.find(".//loc") or sitemap_element.find("loc")
+                    
+                    if sitemap_loc is not None and sitemap_loc.text:
+                        sub_sitemap_url = sitemap_loc.text.strip()
+                        print(f"Processing sub-sitemap: {sub_sitemap_url}")
+                        sub_urls = await get_urls_from_sitemap(sub_sitemap_url, config)
+                        urls.extend(sub_urls)
+            else:
+                # It's a regular sitemap, extract URLs from <url> elements
+                url_elements = []
+                
+                # Try with namespace first
+                for ns_prefix, ns_uri in namespaces.items():
+                    url_elements = root.findall(f".//{ns_prefix}:url", {ns_prefix: ns_uri})
+                    if url_elements:
+                        break
+                
+                # If no url elements found with namespace, try without namespace
+                if not url_elements:
+                    url_elements = root.findall(".//url")
+                
+                print(f"Found regular sitemap with {len(url_elements)} URLs")
+                
+                for url_element in url_elements:
+                    # Try with namespace first for loc element
+                    loc = None
+                    for ns_prefix, ns_uri in namespaces.items():
+                        loc = url_element.find(f".//{ns_prefix}:loc", {ns_prefix: ns_uri})
+                        if loc is not None:
+                            break
+                    
+                    # If not found with namespace, try without namespace
+                    if loc is None:
+                        loc = url_element.find(".//loc") or url_element.find("loc")
+                    
+                    if loc is not None and loc.text:
+                        urls.append(loc.text.strip())
+            
+            # Filter URLs
+            filtered_urls = filter_urls(urls, config)
+            print(f"Found {len(urls)} URLs, filtered to {len(filtered_urls)}")
+            return filtered_urls
+    except httpx.RequestError as e:
         print(f"Network error fetching sitemap {sitemap_url}: {e}")
-        return []
-    except ElementTree.ParseError as e:
-        print(f"XML parsing error for sitemap {sitemap_url}: {e}")
         return []
     except Exception as e:
         print(f"Error parsing sitemap {sitemap_url}: {e}")
+        print(f"Exception type: {type(e).__name__}")
         return []
 
 async def clear_documentation_source(source_id: str) -> bool:
@@ -377,7 +466,7 @@ async def crawl_documentation(openai_client: AsyncOpenAI, config: CrawlConfig) -
         print(f"Starting crawl for {config.source_name} ({config.source_id})")
         
         # Get URLs from sitemap
-        urls = get_urls_from_sitemap(config.sitemap_url, config)
+        urls = await get_urls_from_sitemap(config.sitemap_url, config)
         
         if not urls:
             print(f"No URLs found in sitemap {config.sitemap_url}")
