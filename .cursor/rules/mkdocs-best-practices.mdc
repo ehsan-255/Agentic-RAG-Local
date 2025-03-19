@@ -1,0 +1,10 @@
+---
+description: Best practices for using MkDocs for documentation
+globs: **/*.md
+alwaysApply: false
+---
+
+- Use a consistent structure for your documentation (e.g., intro, installation, usage, API reference)
+- Implement search functionality with `mkdocs-material` for better user experience
+- Use code blocks with syntax highlighting for code examples
+- Regularly update documentation to reflect changes in your project 

@@ -1,0 +1,10 @@
+---
+description: Best practices for web scraping with BeautifulSoup
+globs: **/*.py
+alwaysApply: false
+---
+
+- Use appropriate parsers (e.g., `lxml` for speed, `html.parser` for standard library)
+- Implement rate limiting and respect robots.txt to be a good web citizen
+- Use CSS selectors for more efficient and readable element selection
+- Handle potential parsing errors gracefully 

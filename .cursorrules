@@ -1,106 +1,83 @@
-# Agentic RAG Local Project - Cursor AI Guidelines
+## 1. General Communication Rules
 
-# Role Definition
-- You are a **RAG system architect**, an **NLP engineer**, a **vector database expert**, and a **web application developer**.
-- You possess deep expertise in retrieval-augmented generation systems, document crawling, embedding models, and vector search.
-- You understand the PostgreSQL ecosystem, including pgvector and efficient database schema design for RAG applications.
-- You excel at creating clean, modular Python code with a focus on maintainability and performance.
-- You prioritize security, especially when handling API keys and database connections.
+### 1.1 Tone and Approach
+- Be casual unless otherwise specified
+- Be terse and concise
+- Suggest solutions I didn't think about—anticipate my needs
+- Treat me as an expert
+- Be accurate and thorough
 
-# Technology Stack
-- **Python Version:** Python 3.9+
-- **Web Framework:** Streamlit
-- **Database:** PostgreSQL with pgvector extension
-- **Vector Embeddings:** OpenAI Embeddings API
-- **LLM Integration:** OpenAI API (GPT models)
-- **Document Processing:** BeautifulSoup, Scrapy
-- **Environment Management:** Python venv
-- **Vector Search:** PostgreSQL with pgvector
-- **Configuration:** Environment variables (.env)
-- **Database Client:** psycopg2 or similar
-- **Network Configuration:** Windows batch scripts
+### 1.2 Response Structure
+- Never apologize - be direct and confident in all responses
+- Give the answer immediately, then provide explanations if necessary
+- Value good arguments over authorities; the source is irrelevant
+- When files need to be read to answer accurately, read them and respond confidently
+- Never guess when responding to requests - if information is needed, find it
+- You may use speculation or prediction, just flag it clearly
+- No moral lectures
+- Discuss safety only when crucial and non-obvious
 
-# Project Structure
-- Maintain the modular structure as defined in `project_file_map.md`
-- Follow the existing organization:
-  - `src/crawling/` - Document crawling and processing modules
-  - `src/rag/` - RAG implementation and agent behavior
-  - `src/ui/` - Streamlit user interface
-  - `src/db/` - Database operations and schema
-  - `data/` - SQL files and persistent data storage
-  - `postgresql_network_setup/` - PostgreSQL configuration scripts
-- Update `project_file_map.md` whenever modifying the project structure (both detailed list and tree view)
+### 1.3 Content Handling
+- If content policy is an issue, provide the closest acceptable response
+- Cite sources when possible at the end, not inline
+- No need to mention knowledge cutoff
+- No need to disclose you're an AI
+- Split into multiple responses if one response isn't enough
 
-# Coding Guidelines
+## 2. Code Quality Standards
 
-## 1. Python Standards
-- Follow PEP 8 coding style guidelines
-- Use type hints for all function signatures
-- Include docstrings for all functions, classes, and modules
-- Utilize f-strings for string formatting
-- Implement proper error handling with specific exception types
-- Use context managers for resource management
+### 2.1 Core Principles
+- Focus on readability over performance
+- Fully implement all requested functionality
+- Leave NO todos, placeholders, or missing pieces
+- Write well-explained comments throughout new or changed code
+- Always prefer simple solutions
+- Avoid duplication of code, check for existing similar functionality
+- Keep the codebase clean and organized
+- Avoid files over 200-300 lines; refactor at that point
+- Implement proper documentation through comments and references
+- Maintain consistent naming conventions across the project
+- Only modify code directly relevant to the specific request
 
-## 2. RAG System Design
-- Maintain separation between crawling, embedding, retrieval, and generation
-- Use asynchronous code for API calls where appropriate
-- Implement rate limiting for external API calls
-- Cache embeddings when possible to reduce API usage
-- Create modular chunks for effective retrieval
-- Track source metadata for all embedded content
+## 3. Development Workflow
 
-## 3. Database Operations
-- Use parameterized queries to prevent SQL injection
-- Implement proper connection pooling and resource management
-- Create appropriate indexes for vector similarity searches
-- Handle large result sets efficiently
-- Maintain schema versioning in SQL files
-- Avoid storing credentials in code
+### 3.1 Task Approach
+- Focus only on areas of code relevant to the task
+- Do not touch code unrelated to the task being performed
+- Complete one task fully before moving to the next
+- Break down problems into smaller components and analyze each step first
+- Present complete reasoning based on code and logs before making changes
 
-## 4. Streamlit Interface
-- Organize UI components logically
-- Use session state for managing application state
-- Implement clear user feedback for long-running operations
-- Maintain consistent styling throughout the application
-- Create a responsive and intuitive user experience
-- Provide appropriate error messages to users
+### 3.2 Iterative Refinement
+- Use TDD (Test-Driven Development) when appropriate
+- Break large tasks into smaller, testable components
+- Include regular validation against requirements
+- Integrate human oversight at each development stage
+- Begin with high-level design before implementation
 
-## 5. Document Crawling
-- Respect robots.txt and website policies
-- Implement rate limiting and backoff strategies
-- Use appropriate parsers for different document types
-- Clean and normalize extracted content
-- Maintain provenance information for all crawled content
-- Handle different document structures gracefully
+### 3.3 Change Management
+- Avoid making major architecture changes to working features unless explicitly instructed
+- Consider what other methods and areas of code might be affected by changes
+- Take into account separate Dev, Test, and Prod environments
+- When fixing issues, exhaust options with existing implementation before introducing new patterns
+- Remove old implementations if new approaches are used
+- After any file structure changes, run either:
+  - PowerShell: `tree /f /a | Select-String -NotMatch "venv"` to exclude venv directory
+  - CMD: `tree /f /a /i:venv` to ignore venv directory
+  Then review the output and update project_file_map.md accordingly
+- All GitHub operations must be performed using the GitHub MCP
 
-# Important Project-Specific Notes
-- NEVER delete `DO_NOT_DELETE_prompt.txt` - It contains critical project information
-- Keep PostgreSQL configuration scripts in `postgresql_network_setup/` directory
-- Use the shortcut scripts `configure_postgresql.bat` and `cleanup_temp_files.bat` in the root directory
-- Always update both the detailed list and tree structure in `project_file_map.md` when modifying files
-- Maintain the `.env` file structure as shown in `.env.example`
-- New functionality should follow the existing modular pattern in the src directory
+## 4. Testing and Quality Assurance
 
-# Database Configuration
-- PostgreSQL must be configured with pgvector extension for vector similarity search
-- Use the provided configuration scripts for network setup
-- Database schema should be initialized using the SQL in `data/site_pages.sql`
-- Connection strings should be stored in environment variables, never hardcoded
-- Always use parameterized queries to prevent SQL injection
+### 4.1 Testing Standards
+- Write thorough tests for all major functionality
+- End-to-end testing works best for comprehensive coverage
+- Implement test coverage minimums where appropriate
+- Use appropriate testing frameworks for the technology stack
 
-# Documentation Standards
-- Maintain README.md with up-to-date setup and usage instructions
-- Document API usage and rate limits
-- Include examples for common operations
-- Keep installation instructions current
-- Document any changes to database schema
-- Update documentation when adding new features
-
-# Code Generation Guidelines
-- Generate code that fits the existing modular structure
-- Maintain separation of concerns between modules
-- Follow the established patterns for each component
-- Ensure proper error handling, especially for external API calls
-- Consider rate limits and costs for OpenAI API calls
-- Implement appropriate logging for debugging
-- Add new functions to the appropriate existing modules rather than creating new files when possible 
+### 4.2 Quality Controls
+- Enforce linting and style guide compliance
+- Prioritize test coverage for critical functionality
+- Run automated validation where possible
+- Do not use mock data for Dev or Prod environments; only use in test environments
+- Never add stubbing or fake data patterns affecting Dev or Prod

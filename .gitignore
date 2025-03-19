@@ -54,7 +54,6 @@ Thumbs.db
 # Output files from scripts
 *.txt
 !requirements.txt
-!DO_NOT_DELETE_prompt.txt
 
 # Temporary files from batch scripts
 firewall_check.txt

@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """
 Database schema and utility functions for the Agentic RAG system.
 
@@ -14,6 +13,8 @@ import json
 from typing import Dict, List, Optional, Tuple, Any, Union
 from dotenv import load_dotenv
 import logging
+import asyncio
+from datetime import datetime
 
 # Set up logging
 logging.basicConfig(
@@ -37,7 +38,7 @@ def get_connection_string() -> str:
     """
     host = os.getenv("POSTGRES_HOST", "localhost")
     port = os.getenv("POSTGRES_PORT", "5432")
-    database = os.getenv("POSTGRES_DB", "postgres")
+    database = os.getenv("POSTGRES_DB", "agentic_rag")
     user = os.getenv("POSTGRES_USER", "postgres")
     password = os.getenv("POSTGRES_PASSWORD", "")
     
@@ -252,38 +253,39 @@ def update_documentation_source(
         conn = get_connection()
         cur = conn.cursor()
         
-        # Prepare update parts
-        update_parts = []
+        # Build the SET part of the query dynamically based on provided parameters
+        set_parts = []
         params = []
         
         if pages_count is not None:
-            update_parts.append("pages_count = %s")
+            set_parts.append("pages_count = %s")
             params.append(pages_count)
             
         if chunks_count is not None:
-            update_parts.append("chunks_count = %s")
+            set_parts.append("chunks_count = %s")
             params.append(chunks_count)
             
         if status is not None:
-            update_parts.append("status = %s")
+            set_parts.append("status = %s")
             params.append(status)
             
-        if not update_parts:
-            logger.warning("No update fields provided")
+        set_parts.append("last_crawled_at = NOW()")
+        
+        if not set_parts:
+            logger.warning("No fields to update for documentation source")
             return False
             
-        # Add last_crawled_at
-        update_parts.append("last_crawled_at = NOW()")
-        
-        # Create query
+        # Construct the full query
         query = f"""
-        UPDATE documentation_sources 
-        SET {', '.join(update_parts)}
+        UPDATE documentation_sources
+        SET {", ".join(set_parts)}
         WHERE source_id = %s;
         """
+        
+        # Add source_id to params
         params.append(source_id)
         
-        # Execute update
+        # Execute the query
         cur.execute(query, params)
         conn.commit()
         
@@ -310,16 +312,16 @@ def add_site_page(
     text_embedding: Optional[List[float]] = None
 ) -> Optional[int]:
     """
-    Add a new site page to the database.
+    Add a new site page (documentation chunk) to the database.
     
     Args:
         url: URL of the page
-        chunk_number: Chunk number (for pagination)
+        chunk_number: Chunk number within the page
         title: Title of the page
-        summary: Summary of the page content
-        content: Processed content of the page
-        metadata: Metadata for the page
-        embedding: Vector embedding (OpenAI format)
+        summary: Summary of the content
+        content: Processed content
+        metadata: Additional metadata
+        embedding: Vector embedding of the content
         raw_content: Original unprocessed content (optional)
         text_embedding: Alternative text embedding (optional)
         
@@ -331,57 +333,42 @@ def add_site_page(
         conn = get_connection()
         cur = conn.cursor()
         
-        # Check if a page with this URL and chunk number already exists
-        check_query = """
-        SELECT id FROM site_pages
-        WHERE url = %s AND chunk_number = %s;
+        # Insert the new page
+        query = """
+        INSERT INTO site_pages (
+            url, chunk_number, title, summary, content, metadata, embedding, raw_content, text_embedding
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (url, chunk_number) 
+        DO UPDATE SET
+            title = EXCLUDED.title,
+            summary = EXCLUDED.summary,
+            content = EXCLUDED.content,
+            metadata = EXCLUDED.metadata,
+            embedding = EXCLUDED.embedding,
+            raw_content = EXCLUDED.raw_content,
+            text_embedding = EXCLUDED.text_embedding,
+            updated_at = NOW()
+        RETURNING id;
         """
-        cur.execute(check_query, (url, chunk_number))
-        existing = cur.fetchone()
         
-        if existing:
-            # Update existing page
-            query = """
-            UPDATE site_pages
-            SET title = %s, summary = %s, content = %s, 
-                metadata = %s, embedding = %s, raw_content = %s,
-                text_embedding = %s, updated_at = NOW()
-            WHERE url = %s AND chunk_number = %s
-            RETURNING id;
-            """
-            cur.execute(
-                query, 
-                (title, summary, content, Json(metadata), embedding, 
-                 raw_content, text_embedding, url, chunk_number)
+        cur.execute(
+            query, 
+            (
+                url, 
+                chunk_number, 
+                title, 
+                summary, 
+                content, 
+                Json(metadata), 
+                embedding, 
+                raw_content, 
+                text_embedding
             )
-            page_id = cur.fetchone()[0]
-            conn.commit()
-            logger.info(f"Updated site page: {url} (chunk {chunk_number}, ID: {page_id})")
-        else:
-            # Insert new page
-            query = """
-            INSERT INTO site_pages 
-            (url, chunk_number, title, summary, content, metadata, embedding, raw_content, text_embedding)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id;
-            """
-            cur.execute(
-                query, 
-                (url, chunk_number, title, summary, content, Json(metadata), 
-                 embedding, raw_content, text_embedding)
-            )
-            page_id = cur.fetchone()[0]
-            conn.commit()
-            logger.info(f"Added site page: {url} (chunk {chunk_number}, ID: {page_id})")
-            
-            # Increment the chunks count for the source
-            if 'source_id' in metadata:
-                increment_query = """
-                SELECT increment_chunks_count(%s, 1);
-                """
-                cur.execute(increment_query, (metadata['source_id'],))
-                conn.commit()
-                
+        )
+        page_id = cur.fetchone()[0]
+        conn.commit()
+        
+        logger.info(f"Added/updated site page: {url} (chunk: {chunk_number}, ID: {page_id})")
         return page_id
     except Exception as e:
         if conn:
@@ -399,12 +386,12 @@ def match_site_pages(
     similarity_threshold: float = 0.7
 ) -> List[Dict[str, Any]]:
     """
-    Search for site pages similar to the query embedding.
+    Find similar pages using vector similarity search.
     
     Args:
         query_embedding: Vector embedding of the query
-        match_count: Maximum number of results to return
-        filter_metadata: Metadata filter criteria
+        match_count: Number of matches to return
+        filter_metadata: Metadata filters to apply
         similarity_threshold: Minimum similarity threshold
         
     Returns:
@@ -415,15 +402,16 @@ def match_site_pages(
         conn = get_connection()
         cur = conn.cursor(cursor_factory=DictCursor)
         
-        # Execute the match_site_pages function
+        # Use the match_site_pages function
         query = """
         SELECT * FROM match_site_pages(%s, %s, %s, %s);
         """
-        cur.execute(query, (query_embedding, match_count, Json(filter_metadata), similarity_threshold))
-        results = [dict(row) for row in cur.fetchall()]
         
-        logger.info(f"Found {len(results)} matching pages")
-        return results
+        cur.execute(query, (query_embedding, match_count, Json(filter_metadata), similarity_threshold))
+        results = cur.fetchall()
+        
+        # Convert DictCursor results to regular dictionaries
+        return [dict(row) for row in results]
     except Exception as e:
         logger.error(f"Error matching site pages: {e}")
         return []
@@ -440,15 +428,15 @@ def hybrid_search(
     vector_weight: float = 0.7
 ) -> List[Dict[str, Any]]:
     """
-    Perform a hybrid search using both text and vector similarity.
+    Perform hybrid search combining vector similarity and text search.
     
     Args:
-        query_text: Text query
-        query_embedding: Vector embedding of the query
-        match_count: Maximum number of results to return
-        filter_metadata: Metadata filter criteria
+        query_text: Text query for keyword search
+        query_embedding: Vector embedding for semantic search
+        match_count: Number of matches to return
+        filter_metadata: Metadata filters to apply
         similarity_threshold: Minimum similarity threshold
-        vector_weight: Weight for vector similarity vs text similarity
+        vector_weight: Weight to assign to vector search (vs text search)
         
     Returns:
         List[Dict[str, Any]]: List of matching pages with combined scores
@@ -458,21 +446,21 @@ def hybrid_search(
         conn = get_connection()
         cur = conn.cursor(cursor_factory=DictCursor)
         
-        # Execute the hybrid_search function
+        # Use the hybrid_search function
         query = """
         SELECT * FROM hybrid_search(%s, %s, %s, %s, %s, %s);
         """
+        
         cur.execute(
             query, 
-            (query_text, query_embedding, match_count, Json(filter_metadata), 
-             similarity_threshold, vector_weight)
+            (query_text, query_embedding, match_count, Json(filter_metadata), similarity_threshold, vector_weight)
         )
-        results = [dict(row) for row in cur.fetchall()]
+        results = cur.fetchall()
         
-        logger.info(f"Found {len(results)} matching pages in hybrid search")
-        return results
+        # Convert DictCursor results to regular dictionaries
+        return [dict(row) for row in results]
     except Exception as e:
-        logger.error(f"Error in hybrid search: {e}")
+        logger.error(f"Error performing hybrid search: {e}")
         return []
     finally:
         if conn:
@@ -487,15 +475,15 @@ def filter_by_metadata(
     max_date: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
-    Filter site pages by metadata and find matches to query embedding.
+    Find similar pages with advanced metadata filtering.
     
     Args:
         query_embedding: Vector embedding of the query
-        match_count: Maximum number of results to return
+        match_count: Number of matches to return
         source_id: Filter by source ID
         doc_type: Filter by document type
-        min_date: Minimum date (ISO format)
-        max_date: Maximum date (ISO format)
+        min_date: Filter by minimum date
+        max_date: Filter by maximum date
         
     Returns:
         List[Dict[str, Any]]: List of matching pages with similarity scores
@@ -505,20 +493,21 @@ def filter_by_metadata(
         conn = get_connection()
         cur = conn.cursor(cursor_factory=DictCursor)
         
-        # Execute the filter_by_metadata function
+        # Use the filter_by_metadata function
         query = """
         SELECT * FROM filter_by_metadata(%s, %s, %s, %s, %s, %s);
         """
+        
         cur.execute(
             query, 
             (query_embedding, match_count, source_id, doc_type, min_date, max_date)
         )
-        results = [dict(row) for row in cur.fetchall()]
+        results = cur.fetchall()
         
-        logger.info(f"Found {len(results)} matching pages with metadata filtering")
-        return results
+        # Convert DictCursor results to regular dictionaries
+        return [dict(row) for row in results]
     except Exception as e:
-        logger.error(f"Error in metadata filtering: {e}")
+        logger.error(f"Error filtering by metadata: {e}")
         return []
     finally:
         if conn:
@@ -529,29 +518,30 @@ def get_document_context(
     context_size: int = 3
 ) -> List[Dict[str, Any]]:
     """
-    Get the context around a specific page.
+    Get surrounding context chunks for a specific page URL.
     
     Args:
-        page_url: URL of the page
-        context_size: Number of chunks before and after to include
+        page_url: URL of the page to get context for
+        context_size: Number of context chunks to retrieve
         
     Returns:
-        List[Dict[str, Any]]: List of page chunks forming the context
+        List[Dict[str, Any]]: List of context chunks
     """
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor(cursor_factory=DictCursor)
         
-        # Execute the get_document_context function
+        # Use the get_document_context function
         query = """
         SELECT * FROM get_document_context(%s, %s);
         """
-        cur.execute(query, (page_url, context_size))
-        results = [dict(row) for row in cur.fetchall()]
         
-        logger.info(f"Retrieved context with {len(results)} chunks for {page_url}")
-        return results
+        cur.execute(query, (page_url, context_size))
+        results = cur.fetchall()
+        
+        # Convert DictCursor results to regular dictionaries
+        return [dict(row) for row in results]
     except Exception as e:
         logger.error(f"Error getting document context: {e}")
         return []
@@ -572,14 +562,14 @@ def get_documentation_sources() -> List[Dict[str, Any]]:
         cur = conn.cursor(cursor_factory=DictCursor)
         
         query = """
-        SELECT * FROM documentation_sources
-        ORDER BY name;
+        SELECT * FROM documentation_sources ORDER BY name;
         """
-        cur.execute(query)
-        results = [dict(row) for row in cur.fetchall()]
         
-        logger.info(f"Retrieved {len(results)} documentation sources")
-        return results
+        cur.execute(query)
+        results = cur.fetchall()
+        
+        # Convert DictCursor results to regular dictionaries
+        return [dict(row) for row in results]
     except Exception as e:
         logger.error(f"Error getting documentation sources: {e}")
         return []
@@ -587,9 +577,144 @@ def get_documentation_sources() -> List[Dict[str, Any]]:
         if conn:
             release_connection(conn)
 
+def get_source_statistics(source_id: str) -> Dict[str, Any]:
+    """
+    Get statistics for a specific documentation source.
+    
+    Args:
+        source_id: ID of the documentation source
+        
+    Returns:
+        Dict[str, Any]: Statistics for the source
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=DictCursor)
+        
+        query = """
+        SELECT 
+            s.name, 
+            s.source_id, 
+            s.base_url, 
+            s.pages_count, 
+            s.chunks_count,
+            s.created_at,
+            s.last_crawled_at,
+            COUNT(DISTINCT p.url) AS actual_pages_count,
+            COUNT(p.id) AS actual_chunks_count
+        FROM 
+            documentation_sources s
+        LEFT JOIN 
+            site_pages p ON p.metadata->>'source_id' = s.source_id
+        WHERE 
+            s.source_id = %s
+        GROUP BY 
+            s.id;
+        """
+        
+        cur.execute(query, (source_id,))
+        result = cur.fetchone()
+        
+        if result:
+            return dict(result)
+        else:
+            return {}
+    except Exception as e:
+        logger.error(f"Error getting source statistics: {e}")
+        return {}
+    finally:
+        if conn:
+            release_connection(conn)
+
+def delete_documentation_source(source_id: str) -> bool:
+    """
+    Delete a documentation source and all its pages.
+    
+    Args:
+        source_id: ID of the documentation source to delete
+        
+    Returns:
+        bool: True if deletion was successful, False otherwise
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        
+        # First delete all pages associated with this source
+        delete_pages_query = """
+        DELETE FROM site_pages
+        WHERE metadata->>'source_id' = %s;
+        """
+        
+        cur.execute(delete_pages_query, (source_id,))
+        
+        # Then delete the source itself
+        delete_source_query = """
+        DELETE FROM documentation_sources
+        WHERE source_id = %s;
+        """
+        
+        cur.execute(delete_source_query, (source_id,))
+        conn.commit()
+        
+        logger.info(f"Deleted documentation source: {source_id}")
+        return True
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Error deleting documentation source: {e}")
+        return False
+    finally:
+        if conn:
+            release_connection(conn)
+
+def get_page_content(url: str, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Get content for a specific page URL.
+    
+    Args:
+        url: URL of the page
+        source_id: Optional source ID to filter by
+        
+    Returns:
+        List[Dict[str, Any]]: List of chunks for the page
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=DictCursor)
+        
+        query = """
+        SELECT * FROM site_pages
+        WHERE url = %s
+        """
+        
+        params = [url]
+        
+        if source_id:
+            query += " AND metadata->>'source_id' = %s"
+            params.append(source_id)
+            
+        query += " ORDER BY chunk_number;"
+        
+        cur.execute(query, params)
+        results = cur.fetchall()
+        
+        # Convert DictCursor results to regular dictionaries
+        return [dict(row) for row in results]
+    except Exception as e:
+        logger.error(f"Error getting page content: {e}")
+        return []
+    finally:
+        if conn:
+            release_connection(conn)
+
 def setup_database():
     """
-    Set up the database with the required schema and extensions.
+    Set up the database by checking if the pgvector extension is installed
+    and creating the schema if needed.
     
     Returns:
         bool: True if setup was successful, False otherwise
@@ -621,107 +746,4 @@ def setup_database():
 
 # Initialize database on import
 if __name__ != "__main__":
-    initialize_connection_pool() 
-=======
-from typing import List, Dict, Any, Optional
-from datetime import datetime
-from supabase import Client
-
-class DocumentationSource:
-    """Represents a documentation source in the database."""
-    
-    def __init__(self, supabase: Client):
-        self.supabase = supabase
-    
-    def get_all(self) -> List[Dict[str, Any]]:
-        """Get all documentation sources."""
-        response = self.supabase.table("documentation_sources").select("*").order("name").execute()
-        return response.data
-    
-    def get_by_id(self, source_id: int) -> Optional[Dict[str, Any]]:
-        """Get a documentation source by ID."""
-        response = self.supabase.table("documentation_sources").select("*").eq("id", source_id).execute()
-        if response.data:
-            return response.data[0]
-        return None
-    
-    def get_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        """Get a documentation source by name."""
-        response = self.supabase.table("documentation_sources").select("*").eq("name", name).execute()
-        if response.data:
-            return response.data[0]
-        return None
-    
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new documentation source."""
-        response = self.supabase.table("documentation_sources").insert(data).execute()
-        return response.data[0]
-    
-    def update(self, source_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update a documentation source."""
-        response = self.supabase.table("documentation_sources").update(data).eq("id", source_id).execute()
-        return response.data[0]
-    
-    def delete(self, source_id: int) -> bool:
-        """Delete a documentation source."""
-        response = self.supabase.table("documentation_sources").delete().eq("id", source_id).execute()
-        return len(response.data) > 0
-
-
-class SitePage:
-    """Represents a site page in the database."""
-    
-    def __init__(self, supabase: Client):
-        self.supabase = supabase
-    
-    def get_by_source(self, source_id: int) -> List[Dict[str, Any]]:
-        """Get all pages for a documentation source."""
-        response = self.supabase.table("site_pages").select("*").eq("source_id", source_id).execute()
-        return response.data
-    
-    def get_by_url(self, url: str) -> List[Dict[str, Any]]:
-        """Get all chunks for a specific URL."""
-        response = self.supabase.table("site_pages").select("*").eq("url", url).execute()
-        return response.data
-    
-    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new site page."""
-        response = self.supabase.table("site_pages").insert(data).execute()
-        return response.data[0]
-    
-    def upsert(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create or update a site page."""
-        response = self.supabase.table("site_pages").upsert(
-            data,
-            on_conflict=["source_id", "url", "chunk_index"]
-        ).execute()
-        return response.data[0]
-    
-    def delete_by_source(self, source_id: int) -> bool:
-        """Delete all pages for a documentation source."""
-        response = self.supabase.table("site_pages").delete().eq("source_id", source_id).execute()
-        return True
-    
-    def search_similar(self, query_embedding: List[float], source_id: Optional[int] = None, 
-                      limit: int = 5, threshold: float = 0.7) -> List[Dict[str, Any]]:
-        """Search for similar pages using vector similarity."""
-        query = """
-        SELECT id, url, title, content, metadata, 
-               1 - (embedding <=> '[{}]') as similarity
-        FROM site_pages
-        WHERE embedding IS NOT NULL
-        {}
-        AND 1 - (embedding <=> '[{}]') > {}
-        ORDER BY similarity DESC
-        LIMIT {}
-        """.format(
-            ','.join(str(x) for x in query_embedding),
-            f"AND source_id = {source_id}" if source_id is not None else "",
-            ','.join(str(x) for x in query_embedding),
-            threshold,
-            limit
-        )
-        
-        results = self.supabase.execute_raw(query)
-        return results.get("data", [])
->>>>>>> ee4b578bf2a45624bbe5312f94b982f7cd411dc1
+    initialize_connection_pool()

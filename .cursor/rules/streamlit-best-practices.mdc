@@ -1,0 +1,10 @@
+---
+description: Best practices for Streamlit applications
+globs: **/*.py
+alwaysApply: false
+---
+
+- Use `st.cache_data` for expensive computations to improve performance
+- Organize your app into multiple files and use `st_pages` for better structure
+- Implement error handling with `st.exception` for better user experience
+- Use `st.session_state` for managing app state across reruns

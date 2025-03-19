@@ -203,4 +203,4 @@ SELECT * FROM get_document_context(
 
 ## Row Level Security (RLS)
 
-Row Level Security is enabled for both tables with policies that allow public read access. This is particularly useful when using Supabase. 
+Row Level Security is enabled for both tables with policies that allow public read access. This is optional and can be disabled if not needed for your deployment. The default configuration allows read-only access to all tables for simplicity. 

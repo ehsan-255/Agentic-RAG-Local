@@ -1,0 +1,10 @@
+---
+description: Best practices for using Black for code formatting
+globs: **/*.py
+alwaysApply: false
+---
+
+- Integrate Black into your CI/CD pipeline for consistent formatting
+- Use `--line-length` to set an appropriate line length for your project
+- Combine Black with other tools like isort for comprehensive code style management
+- Configure Black to skip certain files or directories if needed 

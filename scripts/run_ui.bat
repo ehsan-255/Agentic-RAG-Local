@@ -1,0 +1,3 @@
+@echo off
+echo Running Agentic RAG UI...
+streamlit run src/ui/streamlit_app.py 

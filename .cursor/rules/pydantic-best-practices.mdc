@@ -1,0 +1,10 @@
+---
+description: Best practices for using Pydantic for data validation
+globs: **/*.py
+alwaysApply: false
+---
+
+- Use `BaseModel` for all data structures to ensure type safety and validation
+- Implement custom validators for complex validation logic
+- Use `Field` to add metadata and constraints to model fields
+- Leverage `pydantic.dataclasses` for lightweight data classes 

@@ -6,12 +6,20 @@ import logfire
 import asyncio
 import httpx
 import os
+import json
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.models.openai import OpenAIModel
 from openai import AsyncOpenAI
-from supabase import Client
 from typing import List, Dict, Any, Optional
+
+from src.db.schema import (
+    match_site_pages,
+    hybrid_search,
+    get_documentation_sources,
+    get_page_content as get_db_page_content,
+    get_source_statistics
+)
 
 load_dotenv()
 
@@ -22,14 +30,12 @@ logfire.configure(send_to_logfire='if-token-present')
 
 @dataclass
 class AgentyRagDeps:
-    supabase: Client
     openai_client: AsyncOpenAI
 
 system_prompt = """
 You are an expert documentation assistant with access to various documentation sources through a vector database. 
 Your job is to assist with questions by retrieving and explaining information from the documentation.
 
-<<<<<<< HEAD
 IMPORTANT RULES:
 1. NEVER answer based on your general knowledge if you can't find specific information in the documentation.
 2. If you cannot find relevant documentation to answer a question, clearly state: "I cannot find specific 
@@ -74,15 +80,23 @@ async def list_documentation_sources(ctx: RunContext[AgentyRagDeps]) -> List[Dic
         List[Dict[str, Any]]: List of documentation sources with their details
     """
     try:
-        # Query Supabase for all documentation sources
-        result = ctx.deps.supabase.from_('documentation_sources') \
-            .select('name, source_id, base_url, created_at, last_crawled_at, pages_count, chunks_count') \
-            .execute()
+        # Get documentation sources from database
+        sources = get_documentation_sources()
         
-        if not result.data:
-            return []
+        # Format the response to include only necessary fields
+        result = []
+        for source in sources:
+            result.append({
+                "name": source["name"],
+                "source_id": source["source_id"],
+                "base_url": source["base_url"],
+                "created_at": source["created_at"].isoformat() if source["created_at"] else None,
+                "last_crawled_at": source["last_crawled_at"].isoformat() if source["last_crawled_at"] else None,
+                "pages_count": source["pages_count"],
+                "chunks_count": source["chunks_count"]
+            })
             
-        return result.data
+        return result
         
     except Exception as e:
         print(f"Error retrieving documentation sources: {e}")
@@ -94,230 +108,171 @@ async def retrieve_relevant_documentation(ctx: RunContext[AgentyRagDeps], user_q
     Retrieve relevant documentation chunks based on the query with RAG.
     
     Args:
-        ctx: The context including the Supabase client and OpenAI client
+        ctx: The context including the OpenAI client
         user_query: The user's question or query
         source_id: Optional source ID to limit the search to a specific documentation source
         match_count: Number of matches to return (default: 5)
         
     Returns:
-        A formatted string containing the most relevant documentation chunks
+        str: A formatted string with the relevant documentation chunks
     """
     try:
-        # Get the embedding for the query
+        # Get query embedding
         query_embedding = await get_embedding(user_query, ctx.deps.openai_client)
         
-        # Prepare filter
-        filter_obj = {}
+        # Prepare filter metadata
+        filter_metadata = {}
         if source_id:
-            filter_obj["source_id"] = source_id
+            filter_metadata["source_id"] = source_id
         
-        # Query Supabase for relevant documents
-        result = ctx.deps.supabase.rpc(
-            'match_site_pages',
-            {
-                'query_embedding': query_embedding,
-                'match_count': match_count,
-                'filter': filter_obj
-            }
-        ).execute()
+        # Perform hybrid search (combines vector similarity and text search)
+        results = hybrid_search(
+            query_text=user_query,
+            query_embedding=query_embedding,
+            match_count=match_count,
+            filter_metadata=filter_metadata
+        )
         
-        if not result.data:
-            return "No relevant documentation found."
-            
+        if not results:
+            return "No relevant documentation found. Try refining your query or checking a different documentation source."
+        
         # Format the results
-        formatted_chunks = []
-        for doc in result.data:
-            # Include source information in the output
-            source_info = f"Source: {doc['metadata'].get('source', 'Unknown')}"
-            url_info = f"URL: {doc['url']}"
+        formatted_results = []
+        for i, result in enumerate(results):
+            # Format the result
+            formatted_result = f"--- Document {i+1} ---\n"
+            formatted_result += f"Title: {result['title']}\n"
+            formatted_result += f"URL: {result['url']}\n"
+            formatted_result += f"Similarity: {result['similarity']:.2f}\n"
+            formatted_result += f"Content:\n{result['content']}\n"
             
-            chunk_text = f"""
-# {doc['title']}
-{source_info}
-{url_info}
-
-{doc['content']}
-"""
-            formatted_chunks.append(chunk_text)
-            
-        # Join all chunks with a separator
-        return "\n\n---\n\n".join(formatted_chunks)
+            # Add formatted result to the list
+            formatted_results.append(formatted_result)
+        
+        # Join the formatted results
+        return "\n\n".join(formatted_results)
         
     except Exception as e:
-        print(f"Error retrieving documentation: {e}")
+        print(f"Error retrieving relevant documentation: {e}")
         return f"Error retrieving documentation: {str(e)}"
 
 @agentic_rag_expert.tool
 async def list_documentation_pages(ctx: RunContext[AgentyRagDeps], source_id: Optional[str] = None) -> List[str]:
     """
-    Retrieve a list of all available documentation pages.
+    List all pages available in a documentation source.
     
     Args:
-        ctx: The context including the Supabase client
-        source_id: Optional source ID to limit the results to a specific documentation source
+        ctx: The context
+        source_id: Optional source ID to limit the list to a specific documentation source
         
     Returns:
-        List[str]: List of unique URLs for all documentation pages
+        List[str]: List of page URLs
     """
     try:
-        # Start building the query
-        query = ctx.deps.supabase.from_('site_pages').select('url')
-        
-        # Add source_id filter if provided
+        # Validate source
         if source_id:
-            query = query.eq('metadata->>source_id', source_id)
+            source_stats = get_source_statistics(source_id)
+            if not source_stats:
+                return []
         
-        # Execute the query
-        result = query.execute()
-        
-        if not result.data:
-            return []
+        # Direct SQL query to get distinct URLs
+        # Note: In a real implementation, you would use a database function for this
+        conn = None
+        from src.db.schema import get_connection, release_connection
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
             
-        # Extract unique URLs
-        urls = sorted(set(doc['url'] for doc in result.data))
-        return urls
-        
+            query = """
+            SELECT DISTINCT url, title FROM site_pages
+            """
+            
+            params = []
+            if source_id:
+                query += " WHERE metadata->>'source_id' = %s"
+                params.append(source_id)
+                
+            query += " ORDER BY url"
+            
+            cur.execute(query, params)
+            results = cur.fetchall()
+            
+            # Format results
+            page_list = [f"{url} - {title}" for url, title in results]
+            return page_list
+            
+        finally:
+            if conn:
+                release_connection(conn)
+                
     except Exception as e:
-        print(f"Error retrieving documentation pages: {e}")
+        print(f"Error listing documentation pages: {e}")
         return []
 
 @agentic_rag_expert.tool
 async def get_page_content(ctx: RunContext[AgentyRagDeps], url: str, source_id: Optional[str] = None) -> str:
     """
-    Retrieve the full content of a specific documentation page by combining all its chunks.
+    Get the content of a specific documentation page.
     
     Args:
-        ctx: The context including the Supabase client
-        url: The URL of the page to retrieve
-        source_id: Optional source ID to limit the results to a specific documentation source
+        ctx: The context
+        url: URL of the page to retrieve
+        source_id: Optional source ID to limit the search
         
     Returns:
-        str: The complete page content with all chunks combined in order
+        str: Content of the page
     """
     try:
-        # Start building the query
-        query = ctx.deps.supabase.from_('site_pages') \
-            .select('title, content, chunk_number, metadata') \
-            .eq('url', url)
+        # Get page content from database
+        chunks = get_db_page_content(url, source_id)
         
-        # Add source_id filter if provided
-        if source_id:
-            query = query.eq('metadata->>source_id', source_id)
-        
-        # Complete the query with ordering
-        result = query.order('chunk_number').execute()
-        
-        if not result.data:
-            return f"No content found for URL: {url}"
+        if not chunks:
+            return f"Page not found: {url}"
             
-        # Format the page with its title and source information
-        page_title = result.data[0]['title'].split(' - ')[0]  # Get the main title
-        source_name = result.data[0]['metadata'].get('source', 'Unknown Source')
+        # Sort chunks by chunk number
+        chunks.sort(key=lambda x: x["chunk_number"])
         
-        formatted_content = [
-            f"# {page_title}",
-            f"Source: {source_name}",
-            f"URL: {url}",
-            ""  # Empty line for spacing
-        ]
-        
-        # Add each chunk's content
-        for chunk in result.data:
-            formatted_content.append(chunk['content'])
+        # Concatenate chunks
+        full_content = ""
+        for chunk in chunks:
+            full_content += f"--- Chunk {chunk['chunk_number']} ---\n"
+            full_content += f"Title: {chunk['title']}\n"
+            full_content += f"Content:\n{chunk['content']}\n\n"
             
-        # Join everything together
-        return "\n\n".join(formatted_content)
+        return full_content
         
     except Exception as e:
         print(f"Error retrieving page content: {e}")
-        return f"Error retrieving page content: {str(e)}" 
-=======
-When answering:
-1. Use ONLY the provided documentation chunks to answer questions
-2. If the documentation doesn't contain the answer, say so clearly
-3. Provide specific examples from the documentation when relevant
-4. Format code blocks, commands, and technical terms appropriately
-5. Cite the source URLs when possible
+        return f"Error retrieving page content: {str(e)}"
 
-Be concise but thorough in your explanations.
-"""
-
-@Agent(model=model, system_prompt=system_prompt)
-async def agentic_rag_expert(
-    deps: AgentyRagDeps,
-    query: str,
-    source_id: Optional[int] = None,
-    max_chunks: int = 5,
-    similarity_threshold: float = 0.7,
-) -> str:
+@agentic_rag_expert.tool
+async def get_source_info(ctx: RunContext[AgentyRagDeps], source_id: str) -> Dict[str, Any]:
     """
-    RAG agent that retrieves relevant documentation chunks and answers questions.
+    Get detailed information about a documentation source.
     
     Args:
-        deps: Dependencies including Supabase client and OpenAI client
-        query: The user's question
-        source_id: Optional ID of a specific documentation source to search
-        max_chunks: Maximum number of chunks to retrieve
-        similarity_threshold: Minimum similarity score for chunks
+        ctx: The context
+        source_id: ID of the documentation source
         
     Returns:
-        A comprehensive answer based on the retrieved documentation
+        Dict[str, Any]: Information about the documentation source
     """
-    # Generate embedding for the query
-    embedding_response = await deps.openai_client.embeddings.create(
-        model="text-embedding-3-small",
-        input=query,
-        encoding_format="float"
-    )
-    query_embedding = embedding_response.data[0].embedding
-    
-    # Build the Supabase query
-    supabase_query = deps.supabase.table("site_pages").select(
-        "id", "url", "title", "content", "metadata"
-    )
-    
-    # Add source filter if specified
-    if source_id is not None:
-        supabase_query = supabase_query.eq("source_id", source_id)
-    
-    # Execute the similarity search
-    results = supabase_query.execute_raw(
-        """
-        SELECT id, url, title, content, metadata, 
-               1 - (embedding <=> '[{}]') as similarity
-        FROM site_pages
-        WHERE embedding IS NOT NULL
-        {}
-        AND 1 - (embedding <=> '[{}]') > {}
-        ORDER BY similarity DESC
-        LIMIT {}
-        """.format(
-            ','.join(str(x) for x in query_embedding),
-            f"AND source_id = {source_id}" if source_id is not None else "",
-            ','.join(str(x) for x in query_embedding),
-            similarity_threshold,
-            max_chunks
-        )
-    )
-    
-    # Process the results
-    chunks = results.get("data", [])
-    
-    if not chunks:
-        return "I couldn't find any relevant information in the documentation to answer your question. Could you rephrase or ask something else?"
-    
-    # Format the context from retrieved chunks
-    context = "\n\n---\n\n".join([
-        f"Source: {chunk['url']}\nTitle: {chunk.get('title', 'Untitled')}\n\n{chunk['content']}"
-        for chunk in chunks
-    ])
-    
-    # Use the context to answer the question
-    answer = f"Based on the documentation, I can provide the following answer:\n\n"
-    
-    # Add information about the sources used
-    sources = [f"- {chunk['url']}" for chunk in chunks]
-    sources_text = "\n\nSources:\n" + "\n".join(sources)
-    
-    return f"{answer}{context}{sources_text}"
->>>>>>> ee4b578bf2a45624bbe5312f94b982f7cd411dc1
+    try:
+        # Get source statistics
+        source_stats = get_source_statistics(source_id)
+        
+        if not source_stats:
+            return {"error": f"Source not found: {source_id}"}
+            
+        # Format datetime objects
+        if source_stats.get("created_at"):
+            source_stats["created_at"] = source_stats["created_at"].isoformat()
+            
+        if source_stats.get("last_crawled_at"):
+            source_stats["last_crawled_at"] = source_stats["last_crawled_at"].isoformat()
+            
+        return source_stats
+        
+    except Exception as e:
+        print(f"Error retrieving source information: {e}")
+        return {"error": str(e)}

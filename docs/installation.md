@@ -6,8 +6,8 @@ This guide will walk you through the process of setting up the Agentic RAG syste
 
 Before you begin, ensure you have the following:
 
-- Python 3.11 or higher
-- A Supabase account with a project set up
+- Python 3.9 or higher
+- PostgreSQL 14 or higher with pgvector extension installed
 - An OpenAI API key
 
 ## Step 1: Clone the Repository
@@ -50,20 +50,40 @@ pip install -r requirements.txt
 2. Edit the `.env` file with your API keys and configuration:
    ```
    OPENAI_API_KEY=your_openai_api_key_here
-   SUPABASE_URL=your_supabase_url_here
-   SUPABASE_SERVICE_KEY=your_supabase_service_key_here
+   POSTGRES_HOST=localhost
+   POSTGRES_PORT=5432
+   POSTGRES_DB=agentic_rag
+   POSTGRES_USER=postgres
+   POSTGRES_PASSWORD=your_password_here
    ```
 
-## Step 5: Set Up the Database
+## Step 5: Set Up PostgreSQL
 
-1. Log in to your Supabase dashboard
-2. Navigate to the SQL Editor
-3. Copy the contents of `data/site_pages.sql`
-4. Paste into the SQL Editor and run the queries
+1. Install PostgreSQL 14 or higher from https://www.postgresql.org/download/
+2. Install the pgvector extension:
+   ```sql
+   CREATE EXTENSION vector;
+   ```
+3. Create a new database named `agentic_rag` (or use the name you specified in your .env file)
+4. Run the setup script to create the necessary tables and functions:
+   ```bash
+   python setup_database.py
+   ```
 
-This will create the necessary tables and functions for the vector search.
+## Step 6: Configure PostgreSQL for Network Access (Optional)
 
-## Step 6: Run the Application
+If you need to access PostgreSQL from other machines on your network:
+
+```bash
+configure_postgresql.bat
+```
+
+This script will:
+- Configure PostgreSQL to listen on all network interfaces
+- Allow connections from your local network
+- Set up Windows Firewall rules for PostgreSQL
+
+## Step 7: Run the Application
 
 Start the Streamlit application:
 
@@ -78,6 +98,7 @@ The application should now be running at http://localhost:8501
 If you encounter any issues:
 
 1. Ensure all environment variables are correctly set
-2. Check that your Supabase and OpenAI API keys are valid
-3. Verify that the SQL setup was completed successfully
-4. Make sure you're using Python 3.11 or higher 
+2. Check that your OpenAI API key is valid
+3. Verify that PostgreSQL is running and the pgvector extension is installed
+4. Make sure the database was created successfully
+5. Check the logs for any error messages 

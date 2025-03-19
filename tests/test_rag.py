@@ -14,20 +14,23 @@ class TestRagExpert(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        self.mock_supabase = MagicMock()
+        self.mock_db_connection = MagicMock()
         self.mock_openai_client = MagicMock()
     
     @patch('src.rag.rag_expert.get_embedding')
-    async def test_retrieve_relevant_documentation(self, mock_get_embedding):
+    @patch('src.rag.rag_expert.hybrid_search')
+    async def test_retrieve_relevant_documentation(self, mock_hybrid_search, mock_get_embedding):
         """Test retrieving relevant documentation."""
         # Setup mock responses
         mock_get_embedding.return_value = [0.1] * 1536
-        self.mock_supabase.rpc.return_value.execute.return_value.data = [
+        mock_hybrid_search.return_value = [
             {
+                'id': 1,
                 'title': 'Test Document',
                 'url': 'https://example.com/docs/test',
                 'content': 'This is a test document content.',
-                'metadata': {'source': 'Test Source'}
+                'metadata': {'source': 'Test Source'},
+                'similarity': 0.95
             }
         ]
         

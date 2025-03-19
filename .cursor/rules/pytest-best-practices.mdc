@@ -1,0 +1,10 @@
+---
+description: Best practices for writing tests with Pytest
+globs: **/*.py
+alwaysApply: false
+---
+
+- Use fixtures for setup and teardown to improve test readability
+- Implement parameterized tests for testing multiple scenarios efficiently
+- Use `pytest.mark` for categorizing and running specific test subsets
+- Write clear, descriptive test names and assertions for better debugging 

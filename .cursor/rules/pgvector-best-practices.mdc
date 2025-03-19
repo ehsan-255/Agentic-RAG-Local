@@ -1,0 +1,10 @@
+---
+description: Best practices for using Pgvector with PostgreSQL
+globs: **/*.py
+alwaysApply: false
+---
+
+- Use appropriate indexing strategies for vector columns
+- Implement efficient similarity search queries
+- Regularly update vector embeddings to maintain accuracy
+- Monitor and optimize vector storage and query performance 

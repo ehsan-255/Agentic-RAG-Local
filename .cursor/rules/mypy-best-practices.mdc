@@ -1,0 +1,10 @@
+---
+description: Best practices for using Mypy for static type checking
+globs: **/*.py
+alwaysApply: false
+---
+
+- Use `--strict` flag for comprehensive type checking
+- Implement type hints for all function parameters and return values
+- Use `TypedDict` for complex dictionary structures
+- Regularly run Mypy as part of your development and CI/CD process 

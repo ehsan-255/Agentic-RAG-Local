@@ -10,5 +10,5 @@ setup(
     install_requires=[
         # Dependencies will be read from requirements.txt
     ],
-    python_requires=">=3.11",
+    python_requires=">=3.9",
 ) 

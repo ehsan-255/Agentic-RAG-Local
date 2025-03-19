@@ -1,0 +1,10 @@
+---
+description: Best practices for making HTTP requests with Requests
+globs: **/*.py
+alwaysApply: false
+---
+
+- Use `Session` objects for connection pooling and cookie persistence
+- Implement proper timeout settings to handle slow or unresponsive servers
+- Use `verify=False` cautiously and only when necessary for SSL verification
+- Handle different types of HTTP errors (4xx, 5xx) appropriately 

@@ -1,0 +1,10 @@
+---
+description: Best practices for using OpenAI API
+globs: **/*.py
+alwaysApply: false
+---
+
+- Implement rate limiting to avoid hitting API limits
+- Use streaming responses for better user experience in long-running tasks
+- Handle API errors gracefully and provide user-friendly error messages
+- Cache API responses where appropriate to reduce costs and improve performance 

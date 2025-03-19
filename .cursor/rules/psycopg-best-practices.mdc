@@ -1,0 +1,10 @@
+---
+description: Best practices for using Psycopg with PostgreSQL
+globs: **/*.py
+alwaysApply: false
+---
+
+- Use connection pooling with `psycopg_pool` for better performance
+- Implement proper error handling and transaction management
+- Use parameterized queries to prevent SQL injection
+- Leverage async capabilities with `asyncpg` for improved performance in async applications 
