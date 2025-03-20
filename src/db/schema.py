@@ -711,6 +711,40 @@ def get_page_content(url: str, source_id: Optional[str] = None) -> List[Dict[str
         if conn:
             release_connection(conn)
 
+def get_processed_urls(source_id: str) -> List[str]:
+    """
+    Get a list of already processed URLs for a source.
+    
+    Args:
+        source_id: ID of the documentation source
+        
+    Returns:
+        List[str]: List of processed URLs
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=DictCursor)
+        
+        # Query for distinct URLs
+        query = """
+        SELECT DISTINCT url FROM site_pages
+        WHERE metadata->>'source_id' = %s
+        """
+        
+        cur.execute(query, [source_id])
+        
+        # Extract URLs from results
+        urls = [row['url'] for row in cur.fetchall()]
+        
+        return urls
+    except Exception as e:
+        logger.error(f"Error getting processed URLs: {e}")
+        return []
+    finally:
+        if conn:
+            release_connection(conn)
+
 def setup_database():
     """
     Set up the database by checking if the pgvector extension is installed

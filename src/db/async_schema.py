@@ -56,7 +56,6 @@ async def setup_database() -> bool:
         await execute_query("""
             CREATE TABLE IF NOT EXISTS site_pages (
                 id SERIAL PRIMARY KEY,
-                source_id TEXT NOT NULL REFERENCES documentation_sources(source_id) ON DELETE CASCADE,
                 url TEXT NOT NULL,
                 chunk_number INTEGER NOT NULL,
                 title TEXT NOT NULL,
@@ -71,7 +70,7 @@ async def setup_database() -> bool:
         
         # Create index on source_id for filtering
         await execute_query("""
-            CREATE INDEX IF NOT EXISTS idx_site_pages_source_id ON site_pages(source_id)
+            CREATE INDEX IF NOT EXISTS idx_site_pages_source_id ON site_pages ((metadata->>'source_id'))
         """)
         
         # Create vector index for similarity search
@@ -193,10 +192,10 @@ async def add_site_page(
         result = await execute_query(
             """
             INSERT INTO site_pages (
-                source_id, url, chunk_number, title, summary, content, metadata, embedding
+                url, chunk_number, title, summary, content, metadata, embedding
             )
             VALUES (
-                %(source_id)s, %(url)s, %(chunk_number)s, %(title)s, %(summary)s, 
+                %(url)s, %(chunk_number)s, %(title)s, %(summary)s, 
                 %(content)s, %(metadata)s, %(embedding)s
             )
             ON CONFLICT (url, chunk_number) 
@@ -210,7 +209,6 @@ async def add_site_page(
             RETURNING id
             """,
             {
-                "source_id": source_id,
                 "url": url,
                 "chunk_number": chunk_number,
                 "title": title,

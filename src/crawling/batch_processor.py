@@ -1,11 +1,24 @@
 from typing import List, Dict, Any, Callable, Awaitable, TypeVar, Optional
 import asyncio
+import time
 from openai import AsyncOpenAI, RateLimitError
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_random_exponential,
     retry_if_exception_type
+)
+
+# Import monitoring utilities
+from src.utils.task_monitoring import (
+    TaskType,
+    monitor_executor,
+    create_monitored_thread_pool
+)
+from src.utils.api_monitoring import monitor_openai_call
+from src.utils.enhanced_logging import (
+    enhanced_api_logger,
+    enhanced_crawler_logger
 )
 
 T = TypeVar('T')
@@ -39,6 +52,12 @@ class BatchProcessor:
         self.min_backoff = min_backoff
         self.max_backoff = max_backoff
         self.semaphore = asyncio.Semaphore(max_concurrent_batches)
+        
+        # Track performance metrics
+        self.total_processed = 0
+        self.successful_batches = 0
+        self.failed_batches = 0
+        self.batch_processing_times = []
     
     async def process_batches(
         self,
@@ -63,21 +82,63 @@ class BatchProcessor:
         # Process batches with concurrency control
         async def process_batch(batch: List[T]) -> List[Any]:
             async with self.semaphore:
-                return await self._retry_batch(batch, processor_fn)
+                start_time = time.time()
+                try:
+                    result = await self._retry_batch(batch, processor_fn)
+                    
+                    # Update performance metrics
+                    duration = time.time() - start_time
+                    self.batch_processing_times.append(duration)
+                    self.successful_batches += 1
+                    
+                    # Log success
+                    enhanced_crawler_logger.debug(
+                        f"Successfully processed batch of {len(batch)} items",
+                        batch_size=len(batch),
+                        duration=duration,
+                        total_successful=self.successful_batches
+                    )
+                    
+                    return result
+                except Exception as e:
+                    # Update metrics
+                    self.failed_batches += 1
+                    
+                    # Log failure
+                    enhanced_crawler_logger.structured_error(
+                        f"Batch processing failed: {e}",
+                        error=e,
+                        batch_size=len(batch),
+                        items_processed=self.total_processed
+                    )
+                    raise
         
         # Create tasks for all batches
         batch_tasks = [process_batch(batch) for batch in batches]
-        batch_results = await asyncio.gather(*batch_tasks)
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
         
-        # Flatten results
+        # Flatten results and handle exceptions
         results = []
         for batch_idx, batch_result in enumerate(batch_results):
             batch = batches[batch_idx]
+            
+            # Skip failed batches
+            if isinstance(batch_result, Exception):
+                enhanced_crawler_logger.structured_error(
+                    f"Batch failed: {batch_result}",
+                    error=batch_result,
+                    batch_index=batch_idx,
+                    batch_size=len(batch)
+                )
+                # Fill with None values
+                results.extend([None] * len(batch))
+                continue
             
             # Add results for this batch
             for item_idx, result in enumerate(batch_result):
                 item = batch[item_idx]
                 results.append(result)
+                self.total_processed += 1
                 
                 # Call item callback if provided
                 if item_callback:
@@ -148,15 +209,41 @@ class EmbeddingBatchProcessor:
         """
         async def process_batch(batch: List[str]) -> List[List[float]]:
             """Process a batch of texts to generate embeddings."""
-            response = await self.openai_client.embeddings.create(
-                model=self.model,
-                input=batch
-            )
-            return [item.embedding for item in response.data]
+            try:
+                start_time = time.time()
+                response = await self._create_embeddings(batch)
+                duration_ms = (time.time() - start_time) * 1000
+                
+                # Log API call metrics
+                enhanced_api_logger.record_api_request(
+                    api_name="OpenAI",
+                    endpoint="embeddings",
+                    duration_ms=duration_ms,
+                    batch_size=len(batch),
+                    model=self.model
+                )
+                
+                return [item.embedding for item in response.data]
+            except Exception as e:
+                enhanced_api_logger.structured_error(
+                    f"Error generating embeddings: {e}",
+                    error=e,
+                    batch_size=len(batch),
+                    model=self.model
+                )
+                raise
         
         # Process all texts in batches
         embeddings = await self.processor.process_batches(texts, process_batch)
         return embeddings
+        
+    @monitor_openai_call("embeddings")
+    async def _create_embeddings(self, batch: List[str]):
+        """Monitored wrapper for creating embeddings."""
+        return await self.openai_client.embeddings.create(
+            model=self.model,
+            input=batch
+        )
 
 
 class LLMBatchProcessor:
@@ -231,20 +318,54 @@ class LLMBatchProcessor:
         Returns:
             Dict[str, str]: Dictionary with title and summary
         """
-        response = await self.openai_client.chat.completions.create(
+        # Use much shorter content and minimal prompting to reduce tokens
+        truncated_content = content[:800]
+        
+        try:
+            start_time = time.time()
+            response = await self._create_chat_completion(truncated_content)
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log API call metrics
+            enhanced_api_logger.record_api_request(
+                api_name="OpenAI",
+                endpoint="chat.completions",
+                duration_ms=duration_ms,
+                content_length=len(truncated_content),
+                model=self.model
+            )
+            
+            text = response.choices[0].message.content
+            lines = text.strip().split("\n")
+            
+            title = lines[0].replace("Title: ", "") if lines and "Title:" in lines[0] else "Untitled Document"
+            summary = lines[1].replace("Summary: ", "") if len(lines) > 1 and "Summary:" in lines[1] else ""
+            
+            # Ensure title and summary are not too long
+            title = title[:80]
+            summary = summary[:150]
+            
+            return {"title": title, "summary": summary}
+        except Exception as e:
+            enhanced_api_logger.structured_error(
+                f"Error generating title and summary: {e}",
+                error=e,
+                content_length=len(truncated_content),
+                model=self.model,
+                url=url
+            )
+            # Return default values
+            return {"title": "Error: Could not generate title", "summary": "Error: Could not generate summary"}
+            
+    @monitor_openai_call("chat.completions")
+    async def _create_chat_completion(self, content: str):
+        """Monitored wrapper for creating chat completions."""
+        return await self.openai_client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are an AI that extracts precise titles and summaries from documentation chunks."},
-                {"role": "user", "content": f"URL: {url}\n\nContent: {content[:4000]}...\n\nGenerate a concise title (max 80 chars) and summary (100-150 chars) for this documentation chunk."}
+                {"role": "system", "content": "Extract titles and summaries efficiently."},
+                {"role": "user", "content": f"Content: {content}\nTitle (≤80 chars), Summary (≤150 chars):"}
             ],
             temperature=0.3,
             max_tokens=150
-        )
-        
-        text = response.choices[0].message.content
-        lines = text.strip().split("\n")
-        
-        title = lines[0].replace("Title: ", "") if lines and "Title:" in lines[0] else "Untitled Document"
-        summary = lines[1].replace("Summary: ", "") if len(lines) > 1 and "Summary:" in lines[1] else "No summary available"
-        
-        return {"title": title, "summary": summary} 
+        ) 

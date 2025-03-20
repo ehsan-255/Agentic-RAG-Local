@@ -2,7 +2,9 @@ import contextlib
 import asyncio
 import sys
 import logging
+import time
 from typing import Optional, Dict, Any, List
+from functools import wraps
 
 # Import our compatibility layer first
 from src.db.db_utils import (
@@ -31,6 +33,19 @@ from src.config import config
 # Global connection pool
 _pool: Optional[AsyncConnectionPool] = None
 _pool_lock = asyncio.Lock()  # Lock for creating the pool
+
+# Add connection monitoring stats
+connection_stats = {
+    "active_connections": 0,
+    "total_connections": 0,
+    "available_connections": 0,
+    "query_time": {
+        "total": 0.0,
+        "count": 0,
+        "avg": 0.0,
+        "max": 0.0
+    }
+}
 
 async def get_connection_pool() -> Optional[AsyncConnectionPool]:
     """
@@ -168,4 +183,75 @@ async def close_pool():
     if _pool is not None:
         await _pool.close()
         _pool = None
-        logger.info("Database connection pool closed") 
+        logger.info("Database connection pool closed")
+
+# Add a function to get connection statistics
+def get_connection_stats():
+    """
+    Get connection pool statistics.
+    
+    Returns:
+        Dict[str, Any]: Connection statistics
+    """
+    global _pool, connection_stats
+    
+    # Update stats from the connection pool if available
+    if _pool:
+        try:
+            # Check for the appropriate attribute names based on which driver is being used
+            if hasattr(_pool, 'max_size'):
+                # psycopg3 attributes
+                connection_stats["total_connections"] = _pool.max_size
+                connection_stats["active_connections"] = _pool.size if hasattr(_pool, 'size') else 0
+                connection_stats["available_connections"] = _pool.max_size - connection_stats["active_connections"]
+            elif hasattr(_pool, 'maxconn'):
+                # psycopg2 compatibility attributes
+                connection_stats["total_connections"] = _pool.maxconn
+                connection_stats["active_connections"] = len(_pool._used) if hasattr(_pool, '_used') else 0
+                connection_stats["available_connections"] = _pool.maxconn - connection_stats["active_connections"]
+            else:
+                # Generic fallback for unknown pool implementation
+                connection_stats["total_connections"] = "unknown"
+                connection_stats["active_connections"] = "unknown"
+                connection_stats["available_connections"] = "unknown"
+                logger.warning("Unable to determine connection pool metrics - unknown pool implementation")
+        except Exception as e:
+            logger.error(f"Error updating connection stats: {e}")
+    
+    return connection_stats.copy()
+
+# Function decorator to track query execution time
+def track_query_time(func):
+    """
+    Decorator to track query execution time.
+    
+    Args:
+        func: Function to decorate
+        
+    Returns:
+        Wrapped function
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        global connection_stats
+        start_time = time.time()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            duration = time.time() - start_time
+            connection_stats["query_time"]["total"] += duration
+            connection_stats["query_time"]["count"] += 1
+            connection_stats["query_time"]["avg"] = (
+                connection_stats["query_time"]["total"] / 
+                connection_stats["query_time"]["count"]
+            )
+            connection_stats["query_time"]["max"] = max(
+                connection_stats["query_time"]["max"],
+                duration
+            )
+    
+    return wrapper
+
+# Apply the decorator to execute_query function if it exists
+if "execute_query" in globals():
+    execute_query = track_query_time(execute_query) 
