@@ -28,7 +28,7 @@ class Config:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     
     # Crawler Configuration
-    DEFAULT_CHUNK_SIZE = int(os.getenv("DEFAULT_CHUNK_SIZE", "5000"))
+    DEFAULT_CHUNK_SIZE = int(os.getenv("DEFAULT_CHUNK_SIZE", "1000"))
     DEFAULT_MAX_CONCURRENT_CRAWLS = int(os.getenv("DEFAULT_MAX_CONCURRENT_CRAWLS", "3"))
     DEFAULT_MAX_CONCURRENT_API_CALLS = int(os.getenv("DEFAULT_MAX_CONCURRENT_API_CALLS", "5"))
     
