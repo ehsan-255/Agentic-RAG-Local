@@ -253,7 +253,8 @@ class MonitoringState:
             if not session:
                 return False
                 
-            session.end_session()
+            # Call complete() instead of end_session() which doesn't exist
+            session.complete(status="cancelled")
             if self.active_session_id == session_id:
                 self.active_session_id = None
             return True
@@ -367,10 +368,10 @@ class EnhancedLogger(Logger):
         self.name = name
     
     def structured_error(self, message: str, 
-                         error: Optional[Union[BaseError, Exception]] = None,
-                         category: Optional[ErrorCategory] = None,
-                         session_id: Optional[str] = None,
-                         **kwargs) -> None:
+                          error: Optional[Union[BaseError, Exception]] = None,
+                          category: Optional[ErrorCategory] = None,
+                          session_id: Optional[str] = None,
+                          **kwargs) -> None:
         """
         Log a structured error message.
         
@@ -391,9 +392,9 @@ class EnhancedLogger(Logger):
         # Record the error in monitoring state
         monitoring_state.record_error(error if error else Exception(message), session_id)
         
-        # Create error details
+        # Create a completely new error_details dict to prevent any possible collisions
         error_details = {
-            "error_category": effective_category.value if effective_category else "unknown",
+            "error_category": effective_category.value if hasattr(effective_category, 'value') else str(effective_category),
             "timestamp": datetime.now().isoformat(),
             "logger_name": self.name
         }
@@ -409,19 +410,39 @@ class EnhancedLogger(Logger):
         # Add error details if available
         if error:
             if isinstance(error, BaseError):
-                error_details.update(error.to_dict())
+                # Safely add BaseError details, avoiding any 'message' key
+                base_error_dict = error.to_dict()
+                for key, value in base_error_dict.items():
+                    if key != 'message':
+                        error_details[key] = value
+                    else:
+                        error_details['error_message_detail'] = value
             else:
                 error_details["error_type"] = error.__class__.__name__
                 error_details["error_message"] = str(error)
                 
-            # Add traceback
-            error_details["traceback"] = traceback.format_exc()
-            
-        # Add additional fields
-        error_details.update(kwargs)
+            # Add traceback but avoid storing it as 'message'
+            error_details["error_traceback"] = traceback.format_exc()
         
-        # Log the error
-        self.error(message, exc_info=error if not isinstance(error, BaseError) else None, **error_details)
+        # Carefully add kwargs, protecting against any 'message' collisions
+        for key, value in kwargs.items():
+            if key == 'message':
+                error_details['error_message_detail'] = value
+            elif key == 'exc_info':
+                error_details['error_exception_info'] = value
+            else:
+                error_details[key] = value
+        
+        # Get exception info for logging, avoiding collisions with kwargs
+        exception_info = error if not isinstance(error, BaseError) else None
+        
+        # Use a completely different approach to avoid param collision
+        # Call the base logger's log method directly with explicitly named parameters
+        self.logger.error(
+            msg=message,
+            exc_info=True if exception_info else False,
+            extra=error_details
+        )
     
     def record_api_request(self, api_name: str, endpoint: str, 
                           duration_ms: float, status_code: Optional[int] = None,
@@ -532,8 +553,13 @@ def end_crawl_session(session_id: Optional[str] = None, status: str = "completed
     # Preserve source information for logging
     source_name = session.source_name
     
-    # End the session in the monitoring state
-    monitoring_state.end_session(session_id)
+    # Complete the session with the appropriate status
+    # Call complete() method directly on the session
+    session.complete(status=status)
+    
+    # Update the monitoring state to reflect session is no longer active
+    if monitoring_state.active_session_id == session_id:
+        monitoring_state.active_session_id = None
     
     # Log completion
     enhanced_crawler_logger.info(f"Ended crawl session for {source_name}", 

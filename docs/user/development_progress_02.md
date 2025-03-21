@@ -206,3 +206,219 @@ Implemented critical fixes to the database connection handling, error logging sy
 - Added robust diagnostic capabilities for database content inspection
 
 These enhancements significantly improve the stability and debuggability of the system, particularly for long-running crawl operations. The database diagnostics tool provides improved visibility into the state of stored data, making it easier to identify and resolve storage issues. 
+
+## Database Storage Issue Fix
+**Date: March 20, 2025 | Time: 4:45 AM**
+
+Identified and fixed a critical issue where crawled data was not being stored in the database despite successful crawl operations.
+
+### Issues Identified
+- **Missing Database Entries**: Crawl operations reported successful page processing but no data appeared in the database
+  - Root cause: The async database function `add_site_page` was being called without the `await` keyword
+  - This caused a coroutine to be created but never executed
+  - The crawler log showed successful operations because no errors were detected, but the database operations never ran
+
+### Key Fix Implemented
+- **Modified File**: `src/crawling/enhanced_docs_crawler.py`
+- Fixed the async operation by properly awaiting the database call:
+  ```python
+  # Changed this line:
+  chunk_id = add_site_page(...)
+  
+  # To this:
+  chunk_id = await add_site_page(...)
+  ```
+
+### Technical Details
+- **Async Function Execution**: 
+  - In Python, calling an async function without `await` returns a coroutine object but doesn't execute the function
+  - This is easy to miss because no error is raised - the operation appears to work but silently does nothing
+  - The transaction was never being committed to the database
+
+- **Verification Method**:
+  - Created a database diagnostic script (`check_database.py`) that confirms proper data storage
+  - Direct database queries now show the proper data count
+  - Crawler operations now correctly insert pages with embeddings
+
+### Impact
+- **Data Persistence**: Crawled pages are now successfully stored in the database
+- **System Reliability**: Fixed the gap between reported success and actual database state
+- **Diagnostics**: Improved error detection through database content verification
+- **Monitoring**: Better correlation between crawler logs and actual storage state
+
+This fix resolves a subtle but critical issue that affected the entire data pipeline. The system now properly stores all crawled content, making it available for retrieval and querying by the RAG system. 
+
+## Enhanced Text Chunking Implementation
+**Date: March 20, 2025 | Time: 6:05 PM**
+
+Implemented an improved text chunking strategy that enhances the quality and relevance of document chunks for RAG operations.
+
+### Enhancements Implemented
+
+1. **Word-Based Chunking with Overlap**:
+   - **Modified Files**: 
+     - Created new file: `src/utils/text_chunking.py`
+     - Updated: `src/crawling/enhanced_docs_crawler.py`
+     - Updated: `src/config.py`
+     - Updated: `src/ui/streamlit_app.py`
+   - Replaced character-based chunking with word-based chunking
+   - Default chunk size: 250 words (configurable in UI)
+   - Implemented 25% overlap between chunks (configurable in UI)
+
+2. **Code Block Preservation**:
+   - Added detection and preservation of code blocks during chunking
+   - Prevents fragmenting of code examples across multiple chunks
+   - Supports both HTML (`<pre>`, `<code>`) and Markdown (```) code block formats
+
+3. **Structural Boundary Respect**:
+   - Enhanced chunking now respects paragraph boundaries
+   - Uses sentence boundaries for optimal splitting when necessary
+   - Maintains the semantic coherence of content
+
+4. **UI Integration**:
+   - Added word-based chunking toggle in the Streamlit UI
+   - Provided configurable word count and overlap settings
+   - Included helpful tooltips explaining optimal settings
+   - Auto-calculates recommended overlap based on chunk size (25%)
+
+5. **Backward Compatibility**:
+   - Maintained the legacy character-based chunking for backward compatibility
+   - Added toggle in UI to switch between chunking methods
+   - Preserved the exact input-output structure for seamless integration
+
+### Technical Details
+
+- **Advanced Code Block Detection**:
+  ```python
+  def extract_code_blocks(text: str) -> Tuple[str, List[Tuple[int, int, str]]]:
+      """Extract code blocks and replace with placeholders to prevent splitting."""
+      # Match HTML code blocks: <pre>, <code>, etc.
+      html_code_pattern = re.compile(r'<(pre|code)[^>]*>.*?</\1>', re.DOTALL)
+      
+      # Match Markdown code blocks: ```...```
+      md_code_pattern = re.compile(r'```(?:[\w]*\n)?.*?```', re.DOTALL)
+      
+      # Process and extract code blocks
+      # ...
+  ```
+
+- **Word-Based Chunking with Overlap**:
+  ```python
+  def split_text_into_chunks_with_words(
+      text: str, 
+      target_words_per_chunk: int = 250, 
+      overlap_words: int = 50
+  ) -> List[str]:
+      """Split text into chunks while preserving structure and adding overlap."""
+      # Extract code blocks first
+      text_with_placeholders, code_blocks = extract_code_blocks(text)
+      
+      # Process text maintaining paragraph and sentence boundaries
+      # ...
+      
+      # Add overlap between chunks
+      prev_chunk_end_words = " ".join(words[-overlap_words:])
+      current_chunk = prev_chunk_end_words + "\n\n"
+      # ...
+  ```
+
+- **Configuration Updates**:
+  ```python
+  # Added to Config class
+  DEFAULT_CHUNK_WORDS = int(os.getenv("DEFAULT_CHUNK_WORDS", "250"))
+  DEFAULT_OVERLAP_WORDS = int(os.getenv("DEFAULT_OVERLAP_WORDS", "50"))
+  USE_WORD_BASED_CHUNKING = os.getenv("USE_WORD_BASED_CHUNKING", "true").lower() == "true"
+  ```
+
+### Impact
+
+- **Improved RAG Quality**: More coherent, semantically-complete chunks lead to better embedding quality and retrieval accuracy
+- **Preserved Code Context**: Code examples now remain intact within single chunks, improving technical documentation retrieval
+- **Enhanced User Control**: UI provides more granular control over chunking parameters while recommending optimal settings
+- **Seamless Integration**: Changes were implemented with zero impact on the rest of the data pipeline
+
+This implementation significantly improves the quality of the RAG system's text processing capabilities without requiring changes to the database schema or downstream components. The word-based chunking with overlap addresses a key limitation of the previous approach and aligns with industry best practices for RAG systems.
+
+## Chunking Algorithm Selection Implementation
+**Date: March 20, 2025 | Time: 6:30 PM**
+
+Implemented a user interface enhancement to allow selection between word-based and character-based chunking methods, providing flexibility while maintaining reliable operation.
+
+### Key Features Implemented
+
+1. **Improved Chunking Selection UI**:
+   - **Modified Files**:
+     - `src/ui/streamlit_app.py`: Enhanced the UI for selecting chunking method
+     - `src/utils/text_chunking.py`: Added improved logging for chunking operations
+   - Renamed the toggle control to "Chunking Method: Word-based (ON) / Character-based (OFF)"
+   - Added informational messages to clearly indicate the active chunking method
+   - Dynamically updates input fields based on the selected chunking method
+
+2. **Visual Differentiation and Feedback**:
+   - Added contextual indicators (info/warning panels) to clearly show which chunking method is active
+   - Word-based chunking (recommended) shows a blue info panel
+   - Character-based chunking (legacy) shows a yellow warning panel
+   - Enhanced logging to provide detailed information about the chunking process
+
+3. **Detailed Logging**:
+   - Added comprehensive logging of chunking parameters in `text_chunking.py`
+   - Records total word count, words per chunk, and overlap percentage
+   - Helps with debugging and performance monitoring
+   - Added method-specific logging in the document processing pipeline
+
+4. **Default Configuration**:
+   - Word-based chunking remains the default per best practices
+   - Maintains 250 words per chunk with 50 words (25%) overlap as recommended
+   - Ensures seamless switching between methods without affecting the rest of the system
+
+### Technical Implementation Details
+
+- **Toggle-Based Selection**:
+  ```python
+  # Word-based chunking toggle with improved label
+  use_word_based = st.toggle("Chunking Method: Word-based (ON) / Character-based (OFF)", 
+                     value=app_config.USE_WORD_BASED_CHUNKING,
+                     key="use_word_based_chunking",
+                     disabled=crawl_in_progress)
+  
+  if use_word_based:
+      st.info("Using word-based chunking (recommended for better semantic coherence)")
+      # Word-based chunking settings...
+  else:
+      st.warning("Using character-based chunking (legacy mode)")
+      # Character-based chunking settings...
+  ```
+
+- **Enhanced Logging for Chunking Methods**:
+  ```python
+  # In text_chunking.py
+  def enhanced_chunk_text(text, chunk_size_words, overlap_words):
+      total_words = count_words(text)
+      overlap_percentage = (overlap_words / chunk_size_words) * 100
+      print(f"Word-based chunking: {total_words} total words, {chunk_size_words} words per chunk, {overlap_words} words overlap ({overlap_percentage:.1f}%)")
+      # ...
+  ```
+
+- **Proper Processing Pipeline Integration**:
+  ```python
+  # In enhanced_docs_crawler.py - process_and_store_document
+  # Log chunking method
+  if config.use_word_based_chunking:
+      enhanced_crawler_logger.info(
+          f"Using word-based chunking for {url} with {config.chunk_words} words per chunk and {config.overlap_words} words overlap"
+      )
+  else:
+      enhanced_crawler_logger.info(
+          f"Using character-based chunking for {url} with {config.chunk_size} characters per chunk"
+      )
+  ```
+
+### Impact
+
+- **Improved User Experience**: Clearer UI for selecting and understanding chunking methods
+- **Enhanced Flexibility**: Allows users to choose between word-based (semantic) and character-based (legacy) methods
+- **Better Debugging**: Comprehensive logging of chunking parameters for troubleshooting
+- **Maintained Backward Compatibility**: Legacy character-based chunking available when needed
+- **Seamless Integration**: Changes do not disrupt existing database storage or monitoring
+
+The enhanced chunking selection UI provides users with a clear choice between the improved word-based chunking algorithm and the legacy character-based approach, ensuring flexibility while maintaining system reliability and performance. 

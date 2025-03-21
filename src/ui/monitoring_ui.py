@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple, Union
 import psutil
 import matplotlib.pyplot as plt
+import subprocess
 
 from src.utils.enhanced_logging import (
     get_session_stats, 
@@ -983,6 +984,69 @@ def display_system_resources():
     disk = psutil.disk_usage('/')
     st.metric("Disk Usage", f"{disk.percent}%", f"{disk.used / (1024**3):.1f} GB used of {disk.total / (1024**3):.1f} GB")
 
+def display_enhanced_error_details():
+    """Display detailed error information in the monitoring UI."""
+    has_error = False
+    
+    # Check for errors in crawl status
+    if "crawl_status" in st.session_state and "error" in st.session_state.crawl_status:
+        has_error = True
+        error_msg = st.session_state.crawl_status["error"]
+        with st.expander("🔍 View Last Crawl Error Details", expanded=True):
+            st.error(f"Error during crawl: {error_msg}")
+            
+            # Add diagnostic information
+            st.markdown("### Diagnostic Information")
+            
+            # Timeline information
+            if "start_time" in st.session_state.crawl_status:
+                start_time = datetime.fromtimestamp(st.session_state.crawl_status["start_time"])
+                st.text(f"Crawl started: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+            if "end_time" in st.session_state.crawl_status:
+                end_time = datetime.fromtimestamp(st.session_state.crawl_status["end_time"])
+                st.text(f"Crawl ended: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # Calculate duration
+                duration_sec = st.session_state.crawl_status["end_time"] - st.session_state.crawl_status["start_time"]
+                st.text(f"Duration: {duration_sec:.2f} seconds")
+            
+            # Add troubleshooting tips
+            st.markdown("### Troubleshooting Steps")
+            st.markdown("""
+            1. **Check database connection** - Ensure PostgreSQL is running and accessible
+            2. **Verify URL access** - Make sure the target site is accessible
+            3. **Review crawl configuration** - Check chunk size and concurrency settings
+            4. **Check memory usage** - Ensure enough RAM is available for embedding generation
+            5. **Run diagnostics** - Use `check_database.py` to verify data storage
+            """)
+            
+            # Add action button to run diagnostics
+            if st.button("Run Database Diagnostics"):
+                st.session_state.run_diagnostics = True
+    
+    # If we have a request to run diagnostics, do it
+    if st.session_state.get("run_diagnostics", False):
+        st.markdown("### Database Diagnostic Results")
+        try:
+            # Run a simple query to check database connectivity
+            result = subprocess.run(["python", "check_database.py"], capture_output=True, text=True)
+            
+            # Display results
+            st.code(result.stdout)
+            
+            if result.stderr:
+                st.error("Errors encountered:")
+                st.code(result.stderr)
+                
+            # Clear the flag
+            st.session_state.run_diagnostics = False
+        except Exception as diag_error:
+            st.error(f"Error running diagnostics: {str(diag_error)}")
+            st.session_state.run_diagnostics = False
+    
+    return has_error
+
 def monitoring_dashboard():
     """Display a comprehensive monitoring dashboard."""
     # Check if refresh was requested
@@ -1004,6 +1068,10 @@ def monitoring_dashboard():
     
     # Crawl Status tab
     with monitoring_tabs[0]:
+        # First check for and display any enhanced error details
+        has_error = display_enhanced_error_details()
+        
+        # Then show regular crawl status information
         display_crawl_status()
         display_crawl_controls("_dashboard")
     
@@ -1014,8 +1082,8 @@ def monitoring_dashboard():
             metrics = monitoring_data["system"]
             display_cached_system_metrics(metrics)
         else:
-            # Fallback to getting metrics directly
-            display_system_metrics()
+            # Fetch and display fresh system metrics
+            display_system_resources()
     
     # Task Monitoring tab
     with monitoring_tabs[2]:
@@ -1025,7 +1093,7 @@ def monitoring_dashboard():
             display_cached_task_monitoring(task_stats)
         else:
             # Fallback to getting task stats directly
-                display_task_monitoring()
+            display_task_monitoring()
     
     # Error Tracking tab
     with monitoring_tabs[3]:

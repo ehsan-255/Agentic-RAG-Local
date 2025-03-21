@@ -2,10 +2,19 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
 import sys
+import logging
+import asyncio
+import psycopg_pool
 
 # Import with better error handling
 try:
-    from src.db.connection import execute_query, execute_transaction
+    from src.db.connection import (
+        execute_query, 
+        execute_transaction, 
+        get_db_connection, 
+        get_dict_cursor,
+        get_connection_pool
+    )
 except ImportError as e:
     print(f"Error importing connection module: {e}")
     print("This may be due to missing psycopg or psycopg-pool packages.")
@@ -19,6 +28,34 @@ except ImportError as e:
     async def execute_transaction(*args, **kwargs):
         print("WARNING: Using dummy execute_transaction due to import error")
         return False
+    
+    # Add dummy versions of other functions as well
+    async def get_db_connection(*args, **kwargs):
+        print("WARNING: Using dummy get_db_connection due to import error")
+        return None
+        
+    def get_dict_cursor(*args, **kwargs):
+        print("WARNING: Using dummy get_dict_cursor due to import error")
+        return None
+        
+    async def get_connection_pool(*args, **kwargs):
+        print("WARNING: Using dummy get_connection_pool due to import error")
+        return None
+
+# Set up logger for this module
+logger = logging.getLogger("db")
+
+# Add structured error logging if not available
+if not hasattr(logger, 'structured_error'):
+    def structured_error(message, **kwargs):
+        """Fallback structured error logging function"""
+        error_info = f"{message}"
+        if kwargs:
+            error_info += f" Additional info: {str(kwargs)}"
+        logger.error(error_info)
+    
+    # Add the method to the logger
+    logger.structured_error = structured_error
 
 async def setup_database() -> bool:
     """
@@ -165,10 +202,12 @@ async def add_site_page(
     summary: str,
     content: str,
     metadata: Dict[str, Any],
-    embedding: List[float]
+    embedding: List[float],
+    raw_content: Optional[str] = None,
+    text_embedding: Optional[List[float]] = None
 ) -> Optional[int]:
     """
-    Add a new site page chunk to the database.
+    Add a new site page chunk to the database with improved error handling and retries.
     
     Args:
         url: URL of the page
@@ -178,53 +217,193 @@ async def add_site_page(
         content: Text content of the chunk
         metadata: Additional metadata for the chunk
         embedding: Vector embedding of the content
+        raw_content: Original unprocessed content (optional)
+        text_embedding: Alternative text embedding (optional)
         
     Returns:
         Optional[int]: ID of the inserted record or None on error
     """
+    import logging
+    import time
+    import traceback
+    from src.utils.errors import DatabaseError
+    
+    logger = logging.getLogger("db")
+    max_retries = 3
+    retry_delay = 1
+    
+    # Validate input data first
     try:
         source_id = metadata.get("source_id")
         if not source_id:
-            print("Error: source_id is required in metadata")
+            logger.error("Error: source_id is required in metadata for URL: %s", url)
             return None
         
-        # First try to insert the record
-        result = await execute_query(
-            """
-            INSERT INTO site_pages (
-                url, chunk_number, title, summary, content, metadata, embedding
-            )
-            VALUES (
-                %(url)s, %(chunk_number)s, %(title)s, %(summary)s, 
-                %(content)s, %(metadata)s, %(embedding)s
-            )
-            ON CONFLICT (url, chunk_number) 
-            DO UPDATE SET
-                title = %(title)s,
-                summary = %(summary)s,
-                content = %(content)s,
-                metadata = %(metadata)s,
-                embedding = %(embedding)s,
-                created_at = NOW()
-            RETURNING id
-            """,
-            {
-                "url": url,
-                "chunk_number": chunk_number,
-                "title": title,
-                "summary": summary,
-                "content": content,
-                "metadata": json.dumps(metadata),
-                "embedding": embedding
-            }
-        )
+        # Validate data before inserting
+        if not content or len(content.strip()) == 0:
+            logger.error("Error: empty content for URL: %s", url)
+            return None
+            
+        if not embedding or len(embedding) == 0:
+            logger.error("Error: missing embedding for URL: %s", url)
+            return None
+            
+        # Validate embedding length
+        if len(embedding) != 1536:  # Standard OpenAI embedding size
+            logger.warning(f"Unusual embedding length: {len(embedding)} for URL: {url}")
+            
+        # Retry loop for database operations
+        retries = 0
+        while retries < max_retries:
+            try:
+                # First try to insert the record
+                query = """
+                INSERT INTO site_pages (
+                    url, chunk_number, title, summary, content, metadata, embedding, 
+                    raw_content, text_embedding
+                )
+                VALUES (
+                    %(url)s, %(chunk_number)s, %(title)s, %(summary)s, 
+                    %(content)s, %(metadata)s, %(embedding)s,
+                    %(raw_content)s, %(text_embedding)s
+                )
+                ON CONFLICT (url, chunk_number) 
+                DO UPDATE SET
+                    title = %(title)s,
+                    summary = %(summary)s,
+                    content = %(content)s,
+                    metadata = %(metadata)s,
+                    embedding = %(embedding)s,
+                    raw_content = %(raw_content)s,
+                    text_embedding = %(text_embedding)s,
+                    created_at = NOW()
+                RETURNING id
+                """
+                
+                params = {
+                    "url": url,
+                    "chunk_number": chunk_number,
+                    "title": title,
+                    "summary": summary,
+                    "content": content,
+                    "metadata": json.dumps(metadata),
+                    "embedding": embedding,
+                    "raw_content": raw_content,
+                    "text_embedding": text_embedding
+                }
+                
+                logger.debug(f"Executing add_site_page with URL: {url}, chunk: {chunk_number}, title: {title[:50]}...")
+                
+                # Use direct connection to get better error handling
+                async with get_db_connection() as conn:
+                    row_factory = get_dict_cursor()
+                    if row_factory is None:
+                        logger.error("Cannot get dict cursor factory")
+                        return None
+                    
+                    async with conn.cursor(row_factory=row_factory) as cur:
+                        await cur.execute(query, params)
+                        
+                        result = await cur.fetchone()
+                        if not result:
+                            logger.structured_error(
+                                f"Failed to insert/update record for URL: {url}, no ID returned",
+                                category=DatabaseError,
+                                url=url,
+                                chunk_number=chunk_number
+                            )
+                            conn.rollback()
+                            retries += 1
+                            continue
+                            
+                        # Fix the key error by checking the result structure and accessing the ID properly
+                        # The result could be a dictionary, a named tuple, or a regular tuple
+                        try:
+                            # Try dictionary access first (if result is a dict)
+                            if isinstance(result, dict) and "id" in result:
+                                page_id = result["id"]
+                            # Try attribute access (if result is a named tuple)
+                            elif hasattr(result, "id"):
+                                page_id = result.id
+                            # Try accessing the first element (if result is a regular tuple/list)
+                            elif isinstance(result, (list, tuple)) and len(result) > 0:
+                                page_id = result[0]
+                            else:
+                                # As a last resort, iterate through the result to see what we have
+                                # This helps with debugging by showing the actual structure
+                                if result:
+                                    # Convert result to string for logging
+                                    result_str = str(result)
+                                    logger.debug(f"Result structure: {result_str[:200]}...")
+                                    
+                                    # For dict-like objects, try all possible variations of 'id' key
+                                    if hasattr(result, "keys"):
+                                        for key in result.keys():
+                                            if key.lower() == "id":
+                                                page_id = result[key]
+                                                break
+                                        else:
+                                            # If we couldn't find an 'id', try the first value
+                                            for key in result.keys():
+                                                page_id = result[key]
+                                                break
+                                    else:
+                                        # If nothing works, use repr to see the exact structure
+                                        logger.error(f"Unknown result structure: {repr(result)}")
+                                        raise ValueError(f"Could not extract ID from result: {repr(result)}")
+                                else:
+                                    raise ValueError("Empty result returned from database")
+                        except Exception as e:
+                            logger.error(f"Error extracting ID from result: {e}")
+                            logger.error(f"Result type: {type(result)}, content: {str(result)}")
+                            conn.rollback()
+                            retries += 1
+                            continue
+                            
+                        conn.commit()
+                        
+                        logger.info(f"Added/updated site page: {url} (chunk: {chunk_number}, ID: {page_id})")
+                        return page_id
+                
+            except Exception as e:
+                error_details = traceback.format_exc()
+                logger.error(f"Database error adding site page for URL {url}: {str(e)}\n{error_details}")
+                
+                # Only retry on certain errors (connection issues, deadlocks, etc.)
+                if "connection" in str(e).lower() or "deadlock" in str(e).lower() or "timeout" in str(e).lower():
+                    retries += 1
+                    if retries < max_retries:
+                        logger.info(f"Retrying after error ({retries}/{max_retries}) for URL: {url}")
+                        await asyncio.sleep(retry_delay * retries)  # Exponential backoff
+                    else:
+                        logger.error(f"Maximum retries ({max_retries}) reached for URL: {url}")
+                        return None
+                else:
+                    # Don't retry on data or query errors
+                    logger.error(f"Non-retryable error for URL {url}: {str(e)}")
+                    return None
         
-        if result and len(result) > 0:
-            return result[0]["id"]
-        
+        # If we get here, all retries failed
+        logger.error(f"All retries failed for URL: {url}")
         return None
+            
     except Exception as e:
-        print(f"Error adding site page: {e}")
+        error_details = traceback.format_exc()
+        logger.error(f"Unexpected error adding site page for URL {url}: {str(e)}\n{error_details}")
+        
+        # Additional diagnostic information
+        try:
+            embedding_length = len(embedding) if embedding else 0
+            content_length = len(content) if content else 0
+            metadata_string = str(metadata)[:100] + "..." if metadata else "None"
+            
+            logger.error(
+                f"Diagnostic info: Chunk {chunk_number}, Content length: {content_length}, "
+                f"Embedding length: {embedding_length}, Metadata: {metadata_string}"
+            )
+        except Exception as diagnostic_error:
+            logger.error(f"Error in diagnostic logging: {str(diagnostic_error)}")
+            
         return None
 
 async def get_documentation_sources() -> List[Dict[str, Any]]:

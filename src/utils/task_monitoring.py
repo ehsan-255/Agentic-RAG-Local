@@ -604,4 +604,42 @@ def clean_up_old_tasks(max_age_seconds: float = 3600.0) -> int:
     Returns:
         int: Number of tasks cleaned up
     """
-    return task_registry.clean_old_tasks(max_age_seconds) 
+    return task_registry.clean_old_tasks(max_age_seconds)
+
+def record_task_success(task_type_str: str, description: str = "", metadata: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Simple utility to record a successful task without the need to create and update it separately.
+    
+    Args:
+        task_type_str: String representation of the task type
+        description: Description of the task
+        metadata: Optional metadata for the task
+        
+    Returns:
+        str: The ID of the created task
+    """
+    # Convert string task type to enum
+    try:
+        task_type = TaskType[task_type_str.upper()] if isinstance(task_type_str, str) else task_type_str
+    except (KeyError, AttributeError):
+        task_type = TaskType.OTHER
+        
+    # Generate description if none provided
+    if not description:
+        description = f"Completed {task_type_str} operation"
+        
+    # Add metadata to description if provided
+    if metadata:
+        metadata_str = ", ".join(f"{k}={v}" for k, v in metadata.items() if v is not None)
+        if metadata_str:
+            description = f"{description} ({metadata_str})"
+            
+    # Get registry instance
+    registry = TaskRegistry()
+    
+    # Create and immediately complete the task
+    task_id = registry.create_task(task_type, description)
+    registry.start_task(task_id)
+    registry.complete_task(task_id, True)
+    
+    return task_id 

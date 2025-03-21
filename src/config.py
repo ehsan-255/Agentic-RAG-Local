@@ -28,9 +28,16 @@ class Config:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     
     # Crawler Configuration
-    DEFAULT_CHUNK_SIZE = int(os.getenv("DEFAULT_CHUNK_SIZE", "1000"))
+    DEFAULT_CHUNK_SIZE = int(os.getenv("DEFAULT_CHUNK_SIZE", "1000"))  # Character-based (legacy)
+    DEFAULT_CHUNK_WORDS = int(os.getenv("DEFAULT_CHUNK_WORDS", "250"))  # Word-based
+    DEFAULT_OVERLAP_WORDS = int(os.getenv("DEFAULT_OVERLAP_WORDS", "50"))  # Word overlap
     DEFAULT_MAX_CONCURRENT_CRAWLS = int(os.getenv("DEFAULT_MAX_CONCURRENT_CRAWLS", "3"))
     DEFAULT_MAX_CONCURRENT_API_CALLS = int(os.getenv("DEFAULT_MAX_CONCURRENT_API_CALLS", "5"))
+    
+    # Chunking Configuration
+    USE_WORD_BASED_CHUNKING = os.getenv("USE_WORD_BASED_CHUNKING", "true").lower() == "true"
+    MIN_CHUNK_WORDS = int(os.getenv("MIN_CHUNK_WORDS", "100"))
+    MAX_CHUNK_WORDS = int(os.getenv("MAX_CHUNK_WORDS", "500"))
     
     # Retry Configuration
     DEFAULT_RETRY_ATTEMPTS = int(os.getenv("DEFAULT_RETRY_ATTEMPTS", "6"))
@@ -56,6 +63,9 @@ class Config:
         """Get the default crawler configuration."""
         return {
             "chunk_size": cls.DEFAULT_CHUNK_SIZE,
+            "chunk_words": cls.DEFAULT_CHUNK_WORDS,
+            "overlap_words": cls.DEFAULT_OVERLAP_WORDS,
+            "use_word_based_chunking": cls.USE_WORD_BASED_CHUNKING,
             "max_concurrent_crawls": cls.DEFAULT_MAX_CONCURRENT_CRAWLS,
             "max_concurrent_api_calls": cls.DEFAULT_MAX_CONCURRENT_API_CALLS,
             "retry_attempts": cls.DEFAULT_RETRY_ATTEMPTS,

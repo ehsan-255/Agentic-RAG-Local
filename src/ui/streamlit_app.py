@@ -7,6 +7,7 @@ import time
 import datetime
 import threading
 import logging
+import json
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -74,11 +75,14 @@ openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # Configure logfire to suppress warnings (optional)
 logfire.configure(send_to_logfire='never')
 
-# Default configuration values
-DEFAULT_CHUNK_SIZE = 2000
-DEFAULT_MAX_CONCURRENT_CRAWLS = 3
-DEFAULT_MAX_CONCURRENT_API_CALLS = 5
-DEFAULT_MATCH_COUNT = 5
+# Import the config module
+from src.config import config as app_config
+
+# Change any references to DEFAULT_CHUNK_SIZE, etc. in the file to use app_config instead
+DEFAULT_CHUNK_SIZE = app_config.DEFAULT_CHUNK_SIZE
+DEFAULT_MAX_CONCURRENT_CRAWLS = app_config.DEFAULT_MAX_CONCURRENT_CRAWLS
+DEFAULT_MAX_CONCURRENT_API_CALLS = app_config.DEFAULT_MAX_CONCURRENT_API_CALLS
+DEFAULT_MATCH_COUNT = app_config.DEFAULT_MATCH_COUNT
 DEFAULT_URL_PATTERNS = [
     '/docs/',
     '/documentation/',
@@ -370,7 +374,7 @@ def create_source_form():
     # Check if a crawl is in progress
     crawl_in_progress = get_active_session() is not None
     
-    with st.form("add_source_form"):
+    with st.form("add_source_form", clear_on_submit=False):
         # Heading for the form
         st.subheader("Add New Documentation Source")
         
@@ -382,44 +386,110 @@ def create_source_form():
                     help="URL to a sitemap XML file (e.g., https://example.com/sitemap.xml)",
                     disabled=crawl_in_progress)
         
-        with st.expander("Advanced Options"):
-            st.number_input("Chunk Size", min_value=1000, 
-                        value=DEFAULT_CHUNK_SIZE, key="chunk_size",
-                        disabled=crawl_in_progress)
-                        
+        with st.expander("Advanced Options", expanded=True):
+            # Chunking options
+            st.subheader("Chunking Settings")
+            
+            # Store the previous toggle state to detect changes
+            previous_toggle_state = st.session_state.get("use_word_based_chunking", app_config.USE_WORD_BASED_CHUNKING)
+            
+            # Word-based chunking toggle with improved label
+            use_word_based = st.toggle("Chunking Method: Word-based (ON) / Character-based (OFF)", 
+                               value=previous_toggle_state,
+                               key="use_word_based_chunking",
+                               disabled=crawl_in_progress)
+            
+            # Check if toggle state changed and force a rerun
+            if "use_word_based_chunking" in st.session_state and previous_toggle_state != st.session_state.use_word_based_chunking:
+                # Store the new state before rerunning
+                st.session_state.chunking_mode_changed = True
+                st.rerun()
+            
+            if use_word_based:
+                # Word-based chunking settings
+                st.info("Using word-based chunking (recommended for better semantic coherence)")
+                st.number_input("Chunk Size (words)", min_value=app_config.MIN_CHUNK_WORDS, 
+                            max_value=app_config.MAX_CHUNK_WORDS,
+                            value=app_config.DEFAULT_CHUNK_WORDS, 
+                            key="chunk_words",
+                            help="Target number of words per chunk",
+                            disabled=crawl_in_progress)
+                
+                # Calculate 25% of chunk size
+                if "chunk_words" in st.session_state:
+                    default_overlap = max(25, int(st.session_state.chunk_words * 0.25))
+                else:
+                    default_overlap = app_config.DEFAULT_OVERLAP_WORDS
+                
+                st.number_input("Overlap Size (words)", min_value=10, 
+                            max_value=200,
+                            value=default_overlap, 
+                            key="overlap_words",
+                            help="Number of words to overlap between chunks (recommended: 20-30% of chunk size)",
+                            disabled=crawl_in_progress)
+            else:
+                # Character-based chunking settings (legacy)
+                st.warning("Using character-based chunking (legacy mode)")
+                st.number_input("Chunk Size (characters)", min_value=1000, 
+                            value=app_config.DEFAULT_CHUNK_SIZE, 
+                            key="chunk_size",
+                            help="Maximum number of characters per chunk (legacy mode)",
+                            disabled=crawl_in_progress)
+            
+            # Concurrency settings
+            st.subheader("Concurrency Settings")
             st.number_input("Max Concurrent Requests", min_value=1, 
-                        value=DEFAULT_MAX_CONCURRENT_CRAWLS, key="max_concurrent_crawls",
+                        value=app_config.DEFAULT_MAX_CONCURRENT_CRAWLS, 
+                        key="max_concurrent_crawls",
                         disabled=crawl_in_progress)
                         
             st.number_input("Max Concurrent API Calls", min_value=1, 
-                        value=DEFAULT_MAX_CONCURRENT_API_CALLS, key="max_concurrent_api_calls",
+                        value=app_config.DEFAULT_MAX_CONCURRENT_API_CALLS, 
+                        key="max_concurrent_api_calls",
                         disabled=crawl_in_progress)
-                        
+            
+            # URL patterns
+            st.subheader("URL Filtering")
             st.text_area("URL Patterns to Include (one per line)", 
                       value='\n'.join(DEFAULT_URL_PATTERNS),
                       key="url_patterns_include",
-                      help="URLs containing these patterns will be included",
                       disabled=crawl_in_progress)
                       
             st.text_area("URL Patterns to Exclude (one per line)", 
+                      value="",
                       key="url_patterns_exclude",
-                      help="URLs containing these patterns will be excluded",
                       disabled=crawl_in_progress)
         
-        # Disable the submit button if a crawl is already in progress
-        submit_button = st.form_submit_button(
-            "Add and Crawl", 
-            use_container_width=True,
-            disabled=crawl_in_progress
-        )
+        # Submit button
+        submit_button = st.form_submit_button("Add Source and Start Crawl")
         
-        # Show status message if a crawl is in progress
-        if crawl_in_progress:
-            st.info("⏳ A crawl is already in progress. Please wait for it to complete before starting another one.")
-        
-        if submit_button and not crawl_in_progress:
-            # Instead of setting a flag, directly call the non-blocking crawl starter
-            initiate_crawl()
+        if submit_button:
+            # Validate inputs
+            source_name = st.session_state.source_name.strip()
+            sitemap_url = st.session_state.sitemap_url.strip()
+            
+            if not source_name:
+                st.error("Documentation name is required")
+                return
+                
+            if not validate_sitemap_url(sitemap_url):
+                st.error("Invalid sitemap URL")
+                return
+            
+            # Get form values
+            config_dict = {
+                "chunk_size": st.session_state.get("chunk_size", app_config.DEFAULT_CHUNK_SIZE) if not st.session_state.use_word_based_chunking else app_config.DEFAULT_CHUNK_SIZE,
+                "chunk_words": st.session_state.get("chunk_words", app_config.DEFAULT_CHUNK_WORDS) if st.session_state.use_word_based_chunking else app_config.DEFAULT_CHUNK_WORDS,
+                "overlap_words": st.session_state.get("overlap_words", app_config.DEFAULT_OVERLAP_WORDS) if st.session_state.use_word_based_chunking else app_config.DEFAULT_OVERLAP_WORDS,
+                "use_word_based_chunking": st.session_state.use_word_based_chunking,
+                "max_concurrent_crawls": st.session_state.max_concurrent_crawls,
+                "max_concurrent_api_calls": st.session_state.max_concurrent_api_calls,
+                "url_patterns_include": [p.strip() for p in st.session_state.url_patterns_include.splitlines() if p.strip()],
+                "url_patterns_exclude": [p.strip() for p in st.session_state.url_patterns_exclude.splitlines() if p.strip()]
+            }
+            
+            # Start the crawl
+            initiate_crawl_process(source_name, sitemap_url, config_dict)
 
 
 # Add a monitoring refresh mechanism
@@ -542,44 +612,61 @@ def fetch_monitoring_data_safe():
 # Improve the cancel crawl functionality
 def cancel_current_crawl():
     """Cancel the current crawl with proper status updates."""
-    # First check and log the current state
-    active_session = get_active_session()
-    has_thread = "crawl_thread" in st.session_state and st.session_state.crawl_thread.is_alive() if hasattr(st.session_state, "crawl_thread") else False
-    
-    logger.info(f"Cancelling crawl. Active session: {bool(active_session)}, Active thread: {has_thread}")
-    
-    # Set the stop flag first (for the thread to detect)
+    # Set the stop flag for the crawler to detect
     st.session_state.stop_crawl = True
+    
+    # Check if there is an active crawl session
+    active_session = get_active_session()
+    
+    # Track if we have an active thread
+    has_thread = 'crawl_thread' in st.session_state and st.session_state.crawl_thread is not None
+    
+    # Track crawl status
+    has_status = global_state.get_crawl_status()["active"]
+    
+    # Count how many tasks are cancelled
+    st.session_state.tasks_cancelled = global_state.get_cancelled_tasks()
     
     # If we have an active session, end it properly
     if active_session:
         try:
-            # Cancel all tasks
-            tasks_cancelled = cancel_all_tasks()
-            logger.info(f"Cancelled {tasks_cancelled} tasks")
-            
             # Mark the session as complete with cancelled status
             active_session.complete(status="cancelled")
             
             # End the crawl session
-            end_crawl_session(active_session.session_id)
+            end_crawl_session(active_session.session_id, status="cancelled")
             
-            # Record in session state for UI updates
-            st.session_state.crawl_cancelled = True
-            st.session_state.tasks_cancelled = tasks_cancelled
+            # Record in global state
+            global_state.update_crawl_status(
+                active=False,
+                completed=True,
+                success=False,
+                end_time=time.time()
+            )
             
             # UI feedback
-            st.success(f"Crawl cancelled. Stopped {tasks_cancelled} active tasks.")
+            st.success(f"Crawl cancelled. Stopped {global_state.get_cancelled_tasks()} active tasks.")
             
             # Clean up session state
             reset_crawl_state()
         except Exception as e:
             logger.error(f"Error cancelling crawl session: {str(e)}", exc_info=True)
             st.error(f"Error cancelling crawl: {str(e)}")
-    elif has_thread:
-        # If we only have a thread but no session, just log it
-        logger.info("Only thread active, no session to cancel")
-        st.warning("No active crawl session found, but thread is running. Set stop flag.")
+    elif has_thread or has_status:
+        # If we only have a thread but no session, show appropriate message
+        logger.info("Thread active without session, cancellation in progress")
+        st.warning(f"No active crawl session found, but thread is running. Cancelled {global_state.get_cancelled_tasks()} tasks.")
+        
+        # Update global state
+        global_state.update_crawl_status(
+            active=False,
+            completed=True,
+            success=False,
+            end_time=time.time()
+        )
+        
+        # Reset crawl state
+        reset_crawl_state()
     else:
         # No active crawl at all
         st.warning("No active crawl to cancel.")
@@ -592,12 +679,99 @@ def cancel_current_crawl():
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Create a global state for thread-safe operations
+# This prevents the ScriptRunContext errors
+class GlobalState:
+    """Thread-safe global state handler for Streamlit"""
+    
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(GlobalState, cls).__new__(cls)
+            cls._instance.lock = threading.Lock()
+            cls._instance.crawl_status = {
+                "active": False,
+                "completed": False,
+                "success": False,
+                "source_name": None,
+                "url": None,
+                "start_time": None,
+                "end_time": None,
+                "error": None
+            }
+            cls._instance.tasks_cancelled = 0
+            cls._instance.update_needed = False
+        return cls._instance
+    
+    def update_crawl_status(self, **kwargs):
+        """Thread-safe update of crawl status"""
+        with self.lock:
+            for key, value in kwargs.items():
+                self.crawl_status[key] = value
+            self.update_needed = True
+    
+    def get_crawl_status(self):
+        """Thread-safe get of crawl status"""
+        with self.lock:
+            return self.crawl_status.copy()
+    
+    def increment_cancelled_tasks(self):
+        """Thread-safe increment of cancelled tasks counter"""
+        with self.lock:
+            self.tasks_cancelled += 1
+            self.update_needed = True
+    
+    def get_cancelled_tasks(self):
+        """Thread-safe get of cancelled tasks counter"""
+        with self.lock:
+            return self.tasks_cancelled
+    
+    def needs_update(self):
+        """Check if UI needs to be updated"""
+        with self.lock:
+            return self.update_needed
+    
+    def reset_update_flag(self):
+        """Reset the update needed flag after UI is refreshed"""
+        with self.lock:
+            self.update_needed = False
+
+# Create global state instance
+global_state = GlobalState()
+
+def sync_global_state_to_streamlit():
+    """
+    Sync the thread-safe global state to Streamlit's session_state.
+    This should be called at the beginning of the Streamlit app.
+    """
+    if global_state.needs_update():
+        # Update crawl status
+        if "crawl_status" not in st.session_state:
+            st.session_state.crawl_status = {}
+        
+        # Copy the values
+        st.session_state.crawl_status.update(global_state.get_crawl_status())
+        
+        # Update cancelled tasks if needed
+        st.session_state.tasks_cancelled = global_state.get_cancelled_tasks()
+        
+        # Reset the update flag
+        global_state.reset_update_flag()
+        
+        # Request a rerun if needed
+        if "needs_rerun" not in st.session_state:
+            st.session_state.needs_rerun = True
+
 async def main():
     st.set_page_config(
         page_title="Agentic RAG Documentation Assistant",
         page_icon="📚",
         layout="wide"
     )
+    
+    # Sync global state with Streamlit session state
+    sync_global_state_to_streamlit()
 
     # Check if the database is set up
     if not setup_database():
@@ -648,13 +822,57 @@ async def main():
                 import threading
                 
                 def start_crawl_thread():
-                    # We need to create a new event loop for this thread
-                    asyncio.set_event_loop(asyncio.new_event_loop())
-                    # Run the crawl in this thread's event loop
-                    asyncio.get_event_loop().run_until_complete(
-                        crawl_documentation(openai_client, crawl_config)
-                    )
-                    logger.info(f"Crawl thread completed for {crawl_config.source_name}")
+                    """
+                    Start a crawl in a separate thread with better Streamlit compatibility.
+                    This function creates a new event loop and properly manages thread safety.
+                    """
+                    # Import necessary modules
+                    try:
+                        # Use our global state handler to track crawl status
+                        global_state.update_crawl_status(
+                            active=True,
+                            start_time=time.time(),
+                            source_name=crawl_config.source_name,
+                            url=crawl_config.sitemap_url
+                        )
+                        
+                        # Create a new event loop for this thread
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        
+                        try:
+                            # Run the crawl in this thread's event loop
+                            logger.info(f"Thread starting crawl for {crawl_config.source_name}")
+                            results = loop.run_until_complete(
+                                crawl_documentation(openai_client, crawl_config)
+                            )
+                            
+                            # Update status on completion using thread-safe global state
+                            global_state.update_crawl_status(
+                                completed=True,
+                                success=results,
+                                end_time=time.time()
+                            )
+                            
+                            logger.info(f"Crawl thread completed for {crawl_config.source_name}")
+                        except Exception as e:
+                            # Handle and record exceptions
+                            logger.error(f"Error in crawl thread: {str(e)}", exc_info=True)
+                            
+                            # Update status with error information
+                            global_state.update_crawl_status(
+                                error=str(e),
+                                completed=True,
+                                success=False,
+                                end_time=time.time()
+                            )
+                        finally:
+                            # Clean up the event loop
+                            loop.close()
+                            global_state.update_crawl_status(active=False)
+                    except Exception as e:
+                        # Handle setup errors
+                        logger.error(f"Error setting up crawl thread: {str(e)}", exc_info=True)
                 
                 # Start the crawl in a separate thread
                 crawl_thread = threading.Thread(target=start_crawl_thread)
@@ -941,6 +1159,169 @@ async def main():
         if tab.empty():
             st.session_state.active_tab = tab_names[i]
             break
+
+    # Check if a rerun is needed due to state changes
+    if st.session_state.get("needs_rerun", False):
+        # Reset the flag
+        st.session_state.needs_rerun = False
+        # Rerun the app to refresh UI with updated state
+        st.rerun()
+
+
+def reset_crawl_state():
+    """Reset all crawl-related state variables to ensure a clean slate for new crawls."""
+    # Clear stop flag
+    if "stop_crawl" in st.session_state:
+        st.session_state.stop_crawl = False
+    
+    # Clear crawl thread reference
+    if "crawl_thread" in st.session_state:
+        # We don't need to stop the thread as it should exit on its own
+        # or respond to the stop flag
+        st.session_state.crawl_thread = None
+    
+    # Clear status tracking
+    if "crawl_status" in st.session_state:
+        # Don't completely remove, keep for history
+        st.session_state.crawl_status["active"] = False
+    
+    # Clear flags
+    if "crawl_initiated" in st.session_state:
+        st.session_state.crawl_initiated = False
+        
+    if "crawl_cancelled" in st.session_state:
+        st.session_state.crawl_cancelled = False
+    
+    # Schedule a refresh of the UI if needed
+    if "needs_rerun" not in st.session_state:
+        st.session_state.needs_rerun = True
+        
+    logger.info("Crawl state reset completed")
+
+
+def display_error_details():
+    """Display detailed error information in the monitoring UI."""
+    has_error = False
+    
+    # Check for errors in crawl status
+    if "crawl_status" in st.session_state and "error" in st.session_state.crawl_status:
+        has_error = True
+        error_msg = st.session_state.crawl_status["error"]
+        with st.expander("🔍 View Last Crawl Error Details", expanded=True):
+            st.error(f"Error during crawl: {error_msg}")
+            
+            # Add diagnostic information
+            st.markdown("### Diagnostic Information")
+            
+            # Timeline information
+            if "start_time" in st.session_state.crawl_status:
+                start_time = datetime.fromtimestamp(st.session_state.crawl_status["start_time"])
+                st.text(f"Crawl started: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+            if "end_time" in st.session_state.crawl_status:
+                end_time = datetime.fromtimestamp(st.session_state.crawl_status["end_time"])
+                st.text(f"Crawl ended: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # Calculate duration
+                duration_sec = st.session_state.crawl_status["end_time"] - st.session_state.crawl_status["start_time"]
+                st.text(f"Duration: {duration_sec:.2f} seconds")
+            
+            # Add troubleshooting tips
+            st.markdown("### Troubleshooting Steps")
+            st.markdown("""
+            1. **Check database connection** - Ensure PostgreSQL is running and accessible
+            2. **Verify URL access** - Make sure the target site is accessible
+            3. **Review crawl configuration** - Check chunk size and concurrency settings
+            4. **Check memory usage** - Ensure enough RAM is available for embedding generation
+            5. **Run diagnostics** - Use `check_database.py` to verify data storage
+            """)
+            
+            # Add action button to run diagnostics
+            if st.button("Run Database Diagnostics"):
+                st.session_state.run_diagnostics = True
+    
+    # If we have a request to run diagnostics, do it
+    if st.session_state.get("run_diagnostics", False):
+        st.markdown("### Database Diagnostic Results")
+        try:
+            # Run a simple query to check database connectivity
+            import subprocess
+            result = subprocess.run(["python", "check_database.py"], capture_output=True, text=True)
+            
+            # Display results
+            st.code(result.stdout)
+            
+            if result.stderr:
+                st.error("Errors encountered:")
+                st.code(result.stderr)
+                
+            # Clear the flag
+            st.session_state.run_diagnostics = False
+        except Exception as diag_error:
+            st.error(f"Error running diagnostics: {str(diag_error)}")
+            st.session_state.run_diagnostics = False
+    
+    return has_error
+
+
+def initiate_crawl_process(source_name: str, sitemap_url: str, config_dict: Dict[str, Any]):
+    """
+    Initialize a crawl process with the specified configuration.
+    
+    Args:
+        source_name: Name of the documentation source
+        sitemap_url: Sitemap URL to crawl
+        config_dict: Dictionary containing crawl configuration
+    """
+    try:
+        # Create a unique ID for the source
+        source_id = f"{source_name.lower().replace(' ', '_')}_{int(time.time())}"
+        
+        # Add the documentation source to the database
+        result = add_documentation_source(
+            name=source_name,
+            source_id=source_id,
+            base_url=sitemap_url,
+            configuration=config_dict
+        )
+        
+        if not result:
+            st.error(f"Failed to add documentation source: {source_name}")
+            return
+        
+        # Log successful addition
+        st.success(f"Added documentation source: {source_name}")
+        
+        # Create the crawl configuration
+        crawl_config = CrawlConfig(
+            source_id=source_id,
+            source_name=source_name,
+            sitemap_url=sitemap_url,
+            chunk_size=config_dict.get("chunk_size", app_config.DEFAULT_CHUNK_SIZE),
+            chunk_words=config_dict.get("chunk_words", app_config.DEFAULT_CHUNK_WORDS),
+            overlap_words=config_dict.get("overlap_words", app_config.DEFAULT_OVERLAP_WORDS),
+            use_word_based_chunking=config_dict.get("use_word_based_chunking", app_config.USE_WORD_BASED_CHUNKING),
+            max_concurrent_requests=config_dict.get("max_concurrent_crawls", app_config.DEFAULT_MAX_CONCURRENT_CRAWLS),
+            max_concurrent_api_calls=config_dict.get("max_concurrent_api_calls", app_config.DEFAULT_MAX_CONCURRENT_API_CALLS),
+            url_patterns_include=config_dict.get("url_patterns_include", []),
+            url_patterns_exclude=config_dict.get("url_patterns_exclude", [])
+        )
+        
+        # Start the crawl directly
+        # We'll use the synchronous wrapper instead of relying on asyncio.create_task
+        # which may not work well with Streamlit's execution model
+        st.session_state.crawl_initiated = True
+        st.session_state.crawl_config = crawl_config
+        
+        # Set the active tab to Monitoring
+        st.session_state.active_tab = "Monitoring"
+        
+        # Force a rerun to apply the tab change
+        st.rerun()
+        
+    except Exception as e:
+        st.error(f"Error initiating crawl: {str(e)}")
+        logger.error(f"Crawl initiation error: {str(e)}", exc_info=True)
 
 
 if __name__ == "__main__":

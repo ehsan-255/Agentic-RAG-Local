@@ -12,16 +12,13 @@ from psycopg2 import pool
 import json
 from typing import Dict, List, Optional, Tuple, Any, Union
 from dotenv import load_dotenv
-import logging
 import asyncio
 from datetime import datetime
+import time
+from src.utils.enhanced_logging import get_enhanced_logger
 
 # Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+logger = get_enhanced_logger('database')
 
 # Load environment variables
 load_dotenv()
@@ -329,55 +326,167 @@ def add_site_page(
         Optional[int]: ID of the newly created page, or None if failed
     """
     conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        
-        # Insert the new page
-        query = """
-        INSERT INTO site_pages (
-            url, chunk_number, title, summary, content, metadata, embedding, raw_content, text_embedding
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (url, chunk_number) 
-        DO UPDATE SET
-            title = EXCLUDED.title,
-            summary = EXCLUDED.summary,
-            content = EXCLUDED.content,
-            metadata = EXCLUDED.metadata,
-            embedding = EXCLUDED.embedding,
-            raw_content = EXCLUDED.raw_content,
-            text_embedding = EXCLUDED.text_embedding,
-            updated_at = NOW()
-        RETURNING id;
-        """
-        
-        cur.execute(
-            query, 
-            (
-                url, 
-                chunk_number, 
-                title, 
-                summary, 
-                content, 
-                Json(metadata), 
-                embedding, 
-                raw_content, 
-                text_embedding
+    max_retries = 3
+    retries = 0
+    
+    while retries < max_retries:
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            
+            # Validate inputs
+            if not url or not content or not embedding:
+                logger.structured_error(
+                    f"Invalid inputs for add_site_page", 
+                    category=ErrorCategory.DATABASE, 
+                    url=url, 
+                    content_length=len(content) if content else 0, 
+                    embedding_length=len(embedding) if embedding else 0
+                )
+                return None
+                
+            # Check metadata formatting
+            if not isinstance(metadata, dict):
+                logger.structured_error(
+                    f"Invalid metadata format for add_site_page", 
+                    category=ErrorCategory.DATABASE, 
+                    metadata_type=str(type(metadata))
+                )
+                metadata = {}  # Default to empty dict to avoid crashes
+            
+            # Validate embedding dimensions
+            if len(embedding) != 1536:
+                logger.warning(f"Unexpected embedding dimension: {len(embedding)}, expected 1536")
+            
+            # Insert the new page
+            query = """
+            INSERT INTO site_pages (
+                url, chunk_number, title, summary, content, metadata, embedding, raw_content, text_embedding
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (url, chunk_number) 
+            DO UPDATE SET
+                title = EXCLUDED.title,
+                summary = EXCLUDED.summary,
+                content = EXCLUDED.content,
+                metadata = EXCLUDED.metadata,
+                embedding = EXCLUDED.embedding,
+                raw_content = EXCLUDED.raw_content,
+                text_embedding = EXCLUDED.text_embedding,
+                updated_at = NOW()
+            RETURNING id;
+            """
+            
+            # Log the query parameters for debugging
+            logger.debug(f"Executing add_site_page with URL: {url}, chunk: {chunk_number}, title: {title[:50]}...")
+            
+            cur.execute(
+                query, 
+                (
+                    url, 
+                    chunk_number, 
+                    title, 
+                    summary, 
+                    content, 
+                    Json(metadata), 
+                    embedding, 
+                    raw_content, 
+                    text_embedding
+                )
             )
+            
+            result = cur.fetchone()
+            if not result:
+                logger.structured_error(
+                    f"Failed to insert/update record for URL: {url}, no ID returned",
+                    category=ErrorCategory.DATABASE,
+                    url=url,
+                    chunk_number=chunk_number
+                )
+                conn.rollback()
+                retries += 1
+                continue
+                
+            page_id = result[0]
+            conn.commit()
+            
+            logger.info(f"Added/updated site page: {url} (chunk: {chunk_number}, ID: {page_id})")
+            return page_id
+            
+        except psycopg2.errors.UniqueViolation as e:
+            # Handle unique constraint violations gracefully
+            if conn:
+                conn.rollback()
+            logger.warning(f"Duplicate entry for URL: {url}, chunk: {chunk_number}: {e}")
+            
+            # Try to find the existing ID
+            try:
+                if conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT id FROM site_pages WHERE url = %s AND chunk_number = %s", (url, chunk_number))
+                    existing = cur.fetchone()
+                    if existing:
+                        logger.info(f"Found existing page ID: {existing[0]} for URL: {url}, chunk: {chunk_number}")
+                        return existing[0]
+            except Exception as lookup_err:
+                logger.structured_error(
+                    f"Error looking up existing page", 
+                    error=lookup_err,
+                    category=ErrorCategory.DATABASE,
+                    url=url,
+                    chunk_number=chunk_number
+                )
+            
+            retries += 1
+            
+        except (psycopg2.errors.OperationalError, psycopg2.errors.AdminShutdown) as e:
+            # Handle connection/operational issues with retry
+            if conn:
+                try:
+                    conn.rollback()
+                except:
+                    pass
+            
+            logger.structured_error(
+                f"Database operational error on attempt {retries+1}", 
+                error=e,
+                category=ErrorCategory.DATABASE,
+                url=url,
+                chunk_number=chunk_number,
+                retry_count=retries+1
+            )
+            retries += 1
+            time.sleep(0.5)  # Add a small delay before retrying
+            
+        except Exception as e:
+            # Log the full exception for debugging
+            if conn:
+                conn.rollback()
+            logger.structured_error(
+                f"Error adding site page", 
+                error=e,
+                category=ErrorCategory.DATABASE,
+                url=url, 
+                chunk_number=chunk_number, 
+                metadata_keys=list(metadata.keys()) if isinstance(metadata, dict) else None
+            )
+            retries += 1
+            
+        finally:
+            if conn:
+                try:
+                    release_connection(conn)
+                except Exception as e:
+                    logger.structured_error(f"Error releasing connection", error=e, category=ErrorCategory.DATABASE)
+    
+    if retries >= max_retries:
+        logger.structured_error(
+            f"Failed to add site page after {max_retries} attempts",
+            category=ErrorCategory.DATABASE,
+            url=url,
+            max_retries=max_retries
         )
-        page_id = cur.fetchone()[0]
-        conn.commit()
-        
-        logger.info(f"Added/updated site page: {url} (chunk: {chunk_number}, ID: {page_id})")
-        return page_id
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        logger.error(f"Error adding site page: {e}")
-        return None
-    finally:
-        if conn:
-            release_connection(conn)
+    
+    return None
 
 def match_site_pages(
     query_embedding: List[float],

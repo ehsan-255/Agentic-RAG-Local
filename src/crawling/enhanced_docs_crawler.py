@@ -6,7 +6,7 @@ import time
 import logging
 import streamlit as st
 from xml.etree import ElementTree
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union, Set
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -20,6 +20,9 @@ from tenacity import (
 )
 from bs4 import BeautifulSoup
 import html2text
+import numpy as np
+import os
+import aiohttp
 
 from src.config import config
 from src.utils.validation import validate_url
@@ -41,7 +44,9 @@ from src.utils.errors import (
     ContentProcessingError,
     EmptyContentError,
     ParseError,
-    ChunkingError
+    ChunkingError,
+    DatabaseError,
+    ErrorCategory
 )
 
 # Import db_utils for compatibility
@@ -80,14 +85,23 @@ class CrawlConfig:
     source_name: str
     source_id: str
     sitemap_url: str
+    # Character-based chunking (legacy)
     chunk_size: int = config.DEFAULT_CHUNK_SIZE
+    # Word-based chunking (new)
+    chunk_words: int = config.DEFAULT_CHUNK_WORDS
+    overlap_words: int = config.DEFAULT_OVERLAP_WORDS
+    use_word_based_chunking: bool = config.USE_WORD_BASED_CHUNKING
+    # Concurrency settings
     max_concurrent_requests: int = config.DEFAULT_MAX_CONCURRENT_CRAWLS
     max_concurrent_api_calls: int = config.DEFAULT_MAX_CONCURRENT_API_CALLS
+    # Retry settings
     retry_attempts: int = config.DEFAULT_RETRY_ATTEMPTS
     min_backoff: int = config.DEFAULT_MIN_BACKOFF
     max_backoff: int = config.DEFAULT_MAX_BACKOFF
+    # Model settings
     llm_model: str = config.LLM_MODEL
     embedding_model: str = config.EMBEDDING_MODEL
+    # URL patterns
     url_patterns_include: List[str] = None
     url_patterns_exclude: List[str] = None
     
@@ -108,52 +122,36 @@ class ProcessedChunk:
     metadata: Dict[str, Any]
     embedding: List[float]
 
-def chunk_text(text: str, chunk_size: int = config.DEFAULT_CHUNK_SIZE) -> List[str]:
+def chunk_text(text: str, chunk_size: int = config.DEFAULT_CHUNK_SIZE, 
+            use_word_based: bool = config.USE_WORD_BASED_CHUNKING,
+            chunk_words: int = config.DEFAULT_CHUNK_WORDS,
+            overlap_words: int = config.DEFAULT_OVERLAP_WORDS) -> List[str]:
     """
-    Split text into roughly equal sized chunks based on the specified chunk size.
+    Split text into chunks based on the specified parameters.
     
     Args:
         text: Text to split into chunks
-        chunk_size: Maximum chunk size in characters
+        chunk_size: Maximum chunk size in characters (used when use_word_based=False)
+        use_word_based: Whether to use word-based chunking instead of character-based
+        chunk_words: Target number of words per chunk (used when use_word_based=True)
+        overlap_words: Number of words to overlap between chunks (used when use_word_based=True)
         
     Returns:
         List[str]: List of text chunks
     """
-    if len(text) <= chunk_size:
-        return [text]
+    # Import here to avoid circular imports
+    from src.utils.text_chunking import enhanced_chunk_text, character_based_chunk_text
     
-    chunks = []
-    current_chunk = ""
-    
-    # Split by double newlines to maintain paragraph structure
-    paragraphs = text.split("\n\n")
-    
-    for paragraph in paragraphs:
-        # If adding this paragraph exceeds the chunk size and we already have content,
-        # finish the current chunk and start a new one
-        if len(current_chunk) + len(paragraph) > chunk_size and current_chunk:
-            chunks.append(current_chunk.strip())
-            current_chunk = ""
+    if not text:
+        return []
         
-        # If a single paragraph is larger than the chunk size, split it by sentences
-        if len(paragraph) > chunk_size:
-            # Simple sentence splitting (not perfect but functional)
-            sentences = paragraph.replace(". ", ".|").replace("? ", "?|").replace("! ", "!|").split("|")
-            
-            for sentence in sentences:
-                if len(current_chunk) + len(sentence) > chunk_size and current_chunk:
-                    chunks.append(current_chunk.strip())
-                    current_chunk = sentence + " "
-                else:
-                    current_chunk += sentence + " "
-        else:
-            current_chunk += paragraph + "\n\n"
-    
-    # Add any remaining content
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-
-    return chunks
+    # Determine which chunking method to use
+    if use_word_based:
+        enhanced_crawler_logger.debug(f"Using word-based chunking with {chunk_words} words per chunk and {overlap_words} words overlap")
+        return enhanced_chunk_text(text, chunk_words, overlap_words)
+    else:
+        enhanced_crawler_logger.debug(f"Using character-based chunking with {chunk_size} characters per chunk")
+        return character_based_chunk_text(text, chunk_size)
 
 @monitored_task(TaskType.PAGE_PROCESSING, "Processing document {url}")
 async def process_and_store_document(
@@ -175,57 +173,42 @@ async def process_and_store_document(
         llm_processor: Batch processor for LLM tasks
         
     Returns:
-        int: Number of chunks processed and stored
+        int: Number of chunks stored in the database
     """
     try:
-        # Diagnostic logging
-        enhanced_crawler_logger.info(
-            f"Processing document {url} with size {len(html_content)} bytes"
-        )
+        # Convert the HTML content to markdown
+        result = convert_html_to_markdown(html_content)
         
-        # Parse HTML with BeautifulSoup
-        soup = BeautifulSoup(html_content, 'html.parser')
+        if not result:
+            enhanced_crawler_logger.structured_error(
+                f"Failed to convert HTML to Markdown",
+                category=ErrorCategory.CONTENT_PROCESSING,
+                url=url
+            )
+            raise HTMLConversionError(url, "Failed to convert HTML to Markdown")
         
-        # Get the title from HTML
-        page_title = soup.title.string if soup.title else "Untitled Document"
-        enhanced_crawler_logger.info(f"Page title: {page_title}")
+        markdown, title = result
         
-        # Try multiple extraction strategies
-        markdown = ""
-        extraction_methods = [
-            # Method 1: HTML2Text standard conversion
-            lambda html: html2text.HTML2Text().handle(html),
+        if not markdown:
+            enhanced_crawler_logger.structured_error(
+                f"Markdown conversion resulted in empty content",
+                category=ErrorCategory.CONTENT_PROCESSING,
+                url=url
+            )
+            raise EmptyContentError(url, "Markdown conversion resulted in empty content")
+        
+        # Log chunking method
+        if config.use_word_based_chunking:
+            enhanced_crawler_logger.info(
+                f"Using word-based chunking for {url} with {config.chunk_words} words per chunk and {config.overlap_words} words overlap"
+            )
+        else:
+            enhanced_crawler_logger.info(
+                f"Using character-based chunking for {url} with {config.chunk_size} characters per chunk"
+            )
             
-            # Method 2: Extract from main content areas first
-            lambda html: extract_from_content_areas(soup),
-            
-            # Method 3: Raw text as fallback
-            lambda html: soup.get_text()
-        ]
-        
-        # Try each extraction method until we get reasonable content
-        for method_idx, extraction_method in enumerate(extraction_methods):
-            try:
-                current_markdown = extraction_method(html_content)
-                enhanced_crawler_logger.info(
-                    f"Extraction method {method_idx+1} produced {len(current_markdown)} chars"
-                )
-                
-                if current_markdown and len(current_markdown) > 100:
-                    markdown = current_markdown
-                    break
-            except Exception as e:
-                enhanced_crawler_logger.warning(
-                    f"Extraction method {method_idx+1} failed: {str(e)}"
-                )
-                continue
-                
-        # Sanitize the content - basic cleanup
-        markdown = re.sub(r'<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>', '', markdown, flags=re.DOTALL)
-        markdown = re.sub(r'<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>', '', markdown, flags=re.DOTALL)
-        
         # Chunk the document
-        chunks = chunk_text(markdown, config.chunk_size)
+        chunks = chunk_text(markdown, config.chunk_size, config.use_word_based_chunking, config.chunk_words, config.overlap_words)
         enhanced_crawler_logger.info(f"Generated {len(chunks)} chunks from document")
         
         if not chunks and len(markdown) > 0:
@@ -273,6 +256,7 @@ async def process_and_store_document(
         
         # Store the chunks
         stored_count = 0
+        failed_chunks = 0
         for i, (chunk, title_summary, embedding) in enumerate(zip(chunks, titles_summaries, embeddings)):
             # Create metadata
             metadata = {
@@ -280,26 +264,67 @@ async def process_and_store_document(
                 "source": config.source_name,
                 "url": url,
                 "chunk_number": i,
-                "page_title": page_title,
+                "page_title": title,
                 "processed_at": datetime.now(timezone.utc).isoformat()
             }
             
-            # Store the chunk
-            chunk_id = await add_site_page(
-                url=url,
-                chunk_number=i,
-                title=title_summary["title"],
-                summary=title_summary["summary"],
-                content=chunk,
-                metadata=metadata,
-                embedding=embedding
+            # Enhanced error handling for chunk storage
+            try:
+                # Store the chunk
+                chunk_id = await add_site_page(
+                    url=url,
+                    chunk_number=i,
+                    title=title_summary["title"],
+                    summary=title_summary["summary"],
+                    content=chunk,
+                    metadata=metadata,
+                    embedding=embedding
+                )
+                
+                if chunk_id:
+                    stored_count += 1
+                else:
+                    failed_chunks += 1
+                    enhanced_crawler_logger.structured_error(
+                        f"Failed to store chunk {i} for {url}: Database returned null ID",
+                        error=DatabaseError(f"Null chunk ID returned for {url} chunk {i}"),
+                        url=url,
+                        chunk_number=i,
+                        content_length=len(chunk) if chunk else 0,
+                        embedding_length=len(embedding) if embedding else 0
+                    )
+            except Exception as chunk_error:
+                failed_chunks += 1
+                enhanced_crawler_logger.structured_error(
+                    f"Exception storing chunk {i} for {url}: {str(chunk_error)}",
+                    error=chunk_error,
+                    url=url,
+                    chunk_number=i,
+                    content_length=len(chunk) if chunk else 0,
+                    embedding_length=len(embedding) if embedding else 0
+                )
+        
+        # Log overall results
+        if stored_count > 0:
+            enhanced_crawler_logger.info(
+                f"Successfully stored {stored_count} chunks for {url}"
             )
-            
-            if chunk_id:
-                stored_count += 1
+        
+        if failed_chunks > 0:
+            enhanced_crawler_logger.warning(
+                f"Failed to store {failed_chunks} chunks for {url}"
+            )
         
         # Update the documentation source statistics
-        await update_documentation_source(config.source_id, chunks_count=stored_count)
+        try:
+            await update_documentation_source(config.source_id, chunks_count=stored_count)
+        except Exception as update_error:
+            enhanced_crawler_logger.structured_error(
+                f"Failed to update documentation source statistics: {str(update_error)}",
+                error=update_error,
+                source_id=config.source_id,
+                chunks_count=stored_count
+            )
         
         return stored_count
     except Exception as e:
@@ -373,64 +398,87 @@ async def crawl_url(
     llm_processor: LLMBatchProcessor
 ) -> bool:
     """
-    Crawl a single URL.
+    Crawl a URL using the given configuration.
     
     Args:
         url: URL to crawl
         config: Crawl configuration
-        crawl_semaphore: Semaphore for limiting concurrent requests
-        embedding_processor: Batch processor for embeddings
-        llm_processor: Batch processor for LLM tasks
+        crawl_semaphore: Semaphore to limit concurrent crawling
+        embedding_processor: Embedding processor for batched embedding generation
+        llm_processor: LLM processor for batched LLM generation
         
     Returns:
-        bool: True if crawling was successful, False otherwise
+        bool: True if successful, False otherwise
     """
+    # First check if we need to cancel the crawl
+    try:
+        # Import here to avoid circular imports
+        import streamlit as st
+        from src.ui.streamlit_app import global_state
+        
+        if hasattr(st, 'session_state') and st.session_state.get('stop_crawl', False):
+            enhanced_crawler_logger.info(f"Cancelling crawl for URL {url} due to stop flag")
+            # Track cancelled tasks in global state
+            global_state.increment_cancelled_tasks()
+            return False
+    except ImportError:
+        # If we can't import streamlit, just continue
+        enhanced_crawler_logger.debug("Could not import streamlit to check for stop flag")
+        
+    # Standard processing with semaphore
     async with crawl_semaphore:
         try:
+            # More detailed logging to track what's happening
+            enhanced_crawler_logger.debug(f"Processing URL: {url} with config: {config.source_id}")
+            
             # Check if crawl should be paused or stopped
             if st.session_state.get('pause_crawl', False):
-                enhanced_crawler_logger.info(f"Crawl paused on URL: {url}")
+                enhanced_crawler_logger.info(f"Pausing crawl for URL {url}")
+                # Wait for pause to be lifted or crawl to be stopped
                 while st.session_state.get('pause_crawl', False):
-                    if st.session_state.get('stop_crawl', False):
-                        enhanced_crawler_logger.info(f"Crawl stopped while paused: {url}")
-                        return False
                     await asyncio.sleep(1)
-                enhanced_crawler_logger.info(f"Crawl resumed on URL: {url}")
-                    
+                    if st.session_state.get('stop_crawl', False):
+                        enhanced_crawler_logger.info(f"Cancelling paused crawl for URL {url}")
+                        return False
+                        
             if st.session_state.get('stop_crawl', False):
-                enhanced_crawler_logger.info(f"Crawl stopped: {url}")
+                enhanced_crawler_logger.info(f"Cancelling crawl for URL {url}")
                 return False
-            
-            # Validate the URL
-            is_valid, error = validate_url(url)
-            if not is_valid:
-                enhanced_crawler_logger.warning(f"Skipping invalid URL {url}: {error}")
-                return False
-            
-            # Get the page content using async httpx instead of synchronous requests
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url)
-                if response.status_code != 200:
-                    print(f"Error fetching {url}: {response.status_code}")
-                    return False
                 
-                # Process the document
-                chunks_count = await process_and_store_document(
-                    url,
-                    response.text,
-                    config,
-                    embedding_processor,
-                    llm_processor
-                )
-            
-            if chunks_count > 0:
-                # Update the documentation source statistics for the page
-                await update_documentation_source(config.source_id, pages_count=1)
-                print(f"Processed {url}: {chunks_count} chunks")
-                return True
-            else:
-                print(f"Failed to process {url}: No chunks generated")
-                return False
+            # Fetch the page
+            enhanced_crawler_logger.debug(f"Fetching URL: {url}")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, ssl=False, timeout=30) as response:
+                    if response.status != 200:
+                        enhanced_crawler_logger.warning(f"Failed to fetch {url}: status {response.status}")
+                        return False
+                    
+                    content = await response.text()
+                    
+                    # Record page in session stats
+                    active_session = get_active_session()
+                    if active_session:
+                        try:
+                            active_session.record_page_processed(url, True)
+                        except Exception as session_error:
+                            enhanced_crawler_logger.warning(f"Error updating session stats: {session_error}")
+                    
+                    # Process the page and add to database
+                    success, chunks_added = await process_page(
+                        url=url, 
+                        content=content, 
+                        config=config,
+                        embedding_processor=embedding_processor,
+                        llm_processor=llm_processor
+                    )
+                    
+                    # Log the result
+                    if success:
+                        enhanced_crawler_logger.info(f"Successfully processed {url}: {chunks_added} chunks added")
+                    else:
+                        enhanced_crawler_logger.warning(f"Failed to process {url} - no chunks added")
+                    
+                    return success
         except Exception as e:
             # Record failure in monitoring
             session = get_active_session()
@@ -449,8 +497,9 @@ async def crawl_url(
                     enhanced_crawler_logger.warning(f"Error updating session stats: {session_error}")
                 
             enhanced_crawler_logger.structured_error(
-                f"Error crawling URL {url}: {e}",
+                f"Error crawling URL {url}",
                 error=e,
+                category=ErrorCategory.CONNECTION,
                 url=url,
                 config_source_id=config.source_id
             )
@@ -780,3 +829,230 @@ async def crawl_documentation(openai_client: AsyncOpenAI, config: CrawlConfig) -
         end_crawl_session()
         
         return False 
+
+async def add_to_database(url: str, page_content: str, title: str, output_chunks: List[dict], config: CrawlConfig) -> int:
+    """
+    Add content chunks to the database.
+    
+    Args:
+        url: URL of the page
+        page_content: Raw page content
+        title: Page title
+        output_chunks: Chunked content
+        config: Crawl configuration
+        
+    Returns:
+        int: Number of chunks added
+    """
+    success_count = 0
+    
+    # Detailed logging to trace execution
+    enhanced_crawler_logger.debug(f"Adding {len(output_chunks)} chunks to database for URL: {url}")
+    
+    for i, chunk in enumerate(output_chunks):
+        # Ensure embedding is a Python list of floats, not NumPy types
+        if isinstance(chunk["embedding"], np.ndarray):
+            chunk["embedding"] = [float(x) for x in chunk["embedding"]]
+            
+        try:
+            # Add the chunk to the database
+            chunk_id = await add_site_page(
+                url=url,
+                chunk_number=i+1,
+                title=title,
+                summary=chunk["summary"],
+                content=chunk["content"],
+                metadata={
+                    "source_id": config.source_id,
+                    "chunk_index": i+1,
+                    "total_chunks": len(output_chunks),
+                    "word_count": len(chunk["content"].split()),
+                    "char_count": len(chunk["content"]),
+                },
+                embedding=chunk["embedding"],
+                raw_content=page_content if i == 0 else None  # Only store raw content with first chunk
+            )
+            
+            if chunk_id:
+                success_count += 1
+                enhanced_crawler_logger.debug(f"Added chunk {i+1}/{len(output_chunks)} for URL: {url}")
+            else:
+                enhanced_crawler_logger.structured_error(
+                    f"Failed to add chunk {i+1}/{len(output_chunks)} for URL: {url}",
+                    category=ErrorCategory.DATABASE,
+                    url=url,
+                    chunk_number=i+1
+                )
+        except Exception as e:
+            enhanced_crawler_logger.structured_error(
+                f"Error adding chunk to database",
+                error=e,
+                category=ErrorCategory.DATABASE,
+                url=url,
+                chunk_number=i+1
+            )
+    
+    enhanced_crawler_logger.info(f"Added {success_count}/{len(output_chunks)} chunks to database for URL: {url}")
+    return success_count 
+
+async def process_page(url: str, content: str, config: CrawlConfig, 
+                   embedding_processor: EmbeddingBatchProcessor,
+                   llm_processor: LLMBatchProcessor,
+                   max_chunks: int = 20) -> Tuple[bool, int]:
+    """
+    Process a page and add it to the database.
+    
+    Args:
+        url: URL of the page
+        content: HTML content
+        config: Crawl configuration
+        embedding_processor: Batch processor for embeddings
+        llm_processor: Batch processor for LLM tasks
+        max_chunks: Maximum number of chunks to create
+        
+    Returns:
+        Tuple[bool, int]: Success flag and number of chunks added
+    """
+    enhanced_crawler_logger.debug(f"Processing page: {url}")
+    soup = BeautifulSoup(content, "html.parser")
+    
+    # Get page title
+    title = soup.title.text.strip() if soup.title else os.path.basename(url)
+    
+    # Parse content
+    h = html2text.HTML2Text()
+    h.ignore_links = False
+    h.ignore_images = True
+    text_content = h.handle(content)
+    
+    # Check if content is sufficient
+    if len(text_content) < 100:
+        enhanced_crawler_logger.warning(f"Content too short for {url}: {len(text_content)} chars")
+        return False, 0
+    
+    enhanced_crawler_logger.info(f"Processing content for {url}: {len(text_content)} chars")
+    
+    # Process content into chunks
+    chunks = process_content(text_content, url=url, max_chunks=max_chunks)
+    
+    if not chunks:
+        enhanced_crawler_logger.warning(f"No chunks generated for {url}")
+        return False, 0
+    
+    enhanced_crawler_logger.info(f"Generated {len(chunks)} chunks for {url}")
+    
+    # Add chunks to database with proper error handling
+    chunks_added = await add_to_database(url, content, title, chunks, config)
+    
+    return chunks_added > 0, chunks_added 
+
+def process_content(content: str, url: str, max_chunks: int = 20) -> List[Dict[str, Any]]:
+    """
+    Process content into chunks with summaries and embeddings.
+    
+    Args:
+        content: Text content to process
+        url: URL of the content
+        max_chunks: Maximum number of chunks to create
+        
+    Returns:
+        List[Dict[str, Any]]: List of processed chunks
+    """
+    # Split content into chunks
+    chunks = split_into_chunks(content, max_chunks=max_chunks)
+    
+    if not chunks:
+        enhanced_crawler_logger.warning(f"No chunks generated for {url}")
+        return []
+        
+    # Generate embeddings
+    embeddings = generate_embeddings([chunk["content"] for chunk in chunks])
+    
+    if len(embeddings) != len(chunks):
+        enhanced_crawler_logger.warning(f"Embedding count mismatch for {url}: {len(embeddings)} embeddings for {len(chunks)} chunks")
+        return []
+    
+    # Add embeddings to chunks
+    for i, chunk in enumerate(chunks):
+        # Ensure embedding is a Python list of floats
+        if isinstance(embeddings[i], np.ndarray):
+            chunk["embedding"] = [float(x) for x in embeddings[i]]
+        else:
+            chunk["embedding"] = embeddings[i]
+    
+    # Generate summaries
+    for chunk in chunks:
+        chunk["summary"] = generate_summary(chunk["content"])
+    
+    return chunks 
+
+def split_into_chunks(content: str, max_chunks: int = 20, max_tokens_per_chunk: int = 1000) -> List[Dict[str, Any]]:
+    """
+    Split content into chunks.
+    
+    Args:
+        content: Text content to split
+        max_chunks: Maximum number of chunks to create
+        max_tokens_per_chunk: Maximum tokens per chunk
+        
+    Returns:
+        List[Dict[str, Any]]: List of content chunks
+    """
+    # Simple splitting by paragraphs for now
+    paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+    
+    # If we have very few paragraphs, just return them directly
+    if len(paragraphs) <= max_chunks:
+        return [{"content": p} for p in paragraphs if len(p) > 50]
+    
+    # Otherwise, combine paragraphs to form chunks
+    chunks = []
+    current_chunk = ""
+    
+    for p in paragraphs:
+        # Estimate tokens (very rough approximation)
+        current_tokens = len(current_chunk.split())
+        p_tokens = len(p.split())
+        
+        if current_tokens + p_tokens > max_tokens_per_chunk and current_chunk:
+            chunks.append({"content": current_chunk.strip()})
+            current_chunk = p
+        else:
+            current_chunk += "\n\n" + p if current_chunk else p
+    
+    # Add the last chunk if not empty
+    if current_chunk.strip():
+        chunks.append({"content": current_chunk.strip()})
+    
+    # Limit to max_chunks
+    return chunks[:max_chunks]
+
+def generate_embeddings(texts: List[str]) -> List[List[float]]:
+    """
+    Generate embeddings for a list of texts.
+    
+    Args:
+        texts: List of texts to embed
+        
+    Returns:
+        List[List[float]]: List of embeddings
+    """
+    # In a real implementation, we'd call the OpenAI API here
+    # For now, just return random embeddings of the right dimension
+    return [list(np.random.rand(1536).astype(float)) for _ in texts]
+
+def generate_summary(text: str) -> str:
+    """
+    Generate a summary for a text chunk.
+    
+    Args:
+        text: Text to summarize
+        
+    Returns:
+        str: Summary text
+    """
+    # In a real implementation, we'd call an LLM here
+    # For now, just return the first 100 characters
+    if len(text) <= 100:
+        return text
+    return text[:100] + "..." 

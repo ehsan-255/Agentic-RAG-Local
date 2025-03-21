@@ -295,4 +295,48 @@ CREATE POLICY "Allow public read access"
   ON site_pages
   FOR SELECT
   TO public
-  USING (true); 
+  USING (true);
+
+-- Create or replace the trigger function to update documentation_sources aggregates
+CREATE OR REPLACE FUNCTION update_source_counts() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        UPDATE documentation_sources
+        SET 
+            pages_count = (
+                SELECT COUNT(DISTINCT url)
+                FROM site_pages 
+                WHERE metadata->>'source_id' = NEW.metadata->>'source_id'
+            ),
+            chunks_count = (
+                SELECT COUNT(*) 
+                FROM site_pages 
+                WHERE metadata->>'source_id' = NEW.metadata->>'source_id'
+            )
+        WHERE source_id = NEW.metadata->>'source_id';
+    ELSIF TG_OP = 'DELETE' THEN
+        UPDATE documentation_sources
+        SET 
+            pages_count = (
+                SELECT COUNT(DISTINCT url)
+                FROM site_pages 
+                WHERE metadata->>'source_id' = OLD.metadata->>'source_id'
+            ),
+            chunks_count = (
+                SELECT COUNT(*) 
+                FROM site_pages 
+                WHERE metadata->>'source_id' = OLD.metadata->>'source_id'
+            )
+        WHERE source_id = OLD.metadata->>'source_id';
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Drop any existing trigger (if present) and create the trigger to call the function
+DROP TRIGGER IF EXISTS update_source_counts_trigger ON site_pages;
+
+CREATE TRIGGER update_source_counts_trigger
+AFTER INSERT OR DELETE ON site_pages
+FOR EACH ROW
+EXECUTE FUNCTION update_source_counts(); 
