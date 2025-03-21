@@ -136,24 +136,67 @@ async def run_agent_with_streaming(user_input: str, source_id: Optional[str] = N
         openai_client=openai_client
     )
 
-    # Run the agent in a stream
-    async with agentic_rag_expert.run_stream(
-        user_input,
-        deps=deps,
-        message_history=st.session_state.messages[:-1],  # pass entire conversation so far
-        context={"source_id": source_id} if source_id else {},  # Pass source_id as context
-    ) as result:
-        # We'll gather partial text to show incrementally
-        partial_text = ""
+    # If source_id is provided, augment the user_input to include information about the source
+    if source_id:
+        user_input_with_source = f"{user_input}\n\nNote: Search in documentation source with ID: {source_id}"
+    else:
+        user_input_with_source = user_input
+
+    # For now, don't use conversation history until we figure out the correct format
+    # This will at least get individual queries working
+
+    try:
+        # Use the non-streaming run method instead of run_stream since we're having issues with streaming
         placeholder = st.empty()
-
-        async for text in result.text_deltas():
-            partial_text += text
-            placeholder.markdown(partial_text)
-
+        placeholder.markdown("Generating response...")
+        
+        # Run the agent (non-streaming)
+        response = await agentic_rag_expert.run(
+            user_input_with_source,  # The user prompt
+            deps=deps,
+            message_history=[],  # Use empty history to avoid format errors
+        )
+        
+        # Get the response content - properly extract from AgentRunResult
+        if hasattr(response, 'data'):
+            partial_text = response.data
+        elif hasattr(response, 'content'):
+            partial_text = response.content
+        elif hasattr(response, 'text'):
+            partial_text = response.text
+        elif isinstance(response, str):
+            partial_text = response
+        else:
+            # Last resort: try to convert the entire result to a string
+            # But make sure to clean up the representation if it's an AgentRunResult
+            str_response = str(response)
+            if str_response.startswith("AgentRunResult"):
+                # Try to extract the data part using string operations
+                try:
+                    data_start = str_response.find("data='") + 6  # length of "data='"
+                    data_end = str_response.rfind("')")
+                    if data_start > 6 and data_end > data_start:
+                        partial_text = str_response[data_start:data_end]
+                    else:
+                        partial_text = str_response
+                except:
+                    partial_text = str_response
+            else:
+                partial_text = str_response
+            
+        # Display the full response at once
+        placeholder.markdown(partial_text)
+        
         # Update the last message with the complete response
         st.session_state.messages[-1]['content'] = partial_text
         st.session_state.messages[-1]['agent_response'] = partial_text
+        
+    except Exception as e:
+        logger.error(f"Error generating response: {str(e)}")
+        placeholder = st.empty()
+        placeholder.error(f"Error generating response: {str(e)}")
+        st.session_state.messages[-1]['content'] = "Sorry, there was an error generating a response."
+        st.session_state.messages[-1]['agent_response'] = "Sorry, there was an error generating a response."
 
 
 async def get_documentation_sources() -> List[Dict[str, Any]]:
@@ -374,67 +417,56 @@ def create_source_form():
     # Check if a crawl is in progress
     crawl_in_progress = get_active_session() is not None
     
+    # Before the form
+    st.subheader("Select Chunking Method")
+    chunking_method = st.radio(
+        "Chunking Method",
+        options=["Word-based", "Character-based"],
+        index=0 if st.session_state.get("use_word_based_chunking", app_config.USE_WORD_BASED_CHUNKING) else 1,
+        help="Word-based is recommended for better semantic coherence"
+    )
+
+    # Update session state
+    st.session_state.use_word_based_chunking = (chunking_method == "Word-based")
+
+    # Then create the form with different input fields based on the selection
     with st.form("add_source_form", clear_on_submit=False):
-        # Heading for the form
-        st.subheader("Add New Documentation Source")
-        
-        # Form fields
-        st.text_input("Documentation Name", key="source_name", 
-                     disabled=crawl_in_progress)
-        
-        st.text_input("Sitemap URL", key="sitemap_url", 
-                    help="URL to a sitemap XML file (e.g., https://example.com/sitemap.xml)",
-                    disabled=crawl_in_progress)
+        # Form fields that don't change
+        st.text_input("Documentation Name", key="source_name", disabled=crawl_in_progress)
+        st.text_input("Sitemap URL", key="sitemap_url", disabled=crawl_in_progress)
         
         with st.expander("Advanced Options", expanded=True):
-            # Chunking options
+            # Chunking options based on previously selected method
             st.subheader("Chunking Settings")
             
-            # Store the previous toggle state to detect changes
-            previous_toggle_state = st.session_state.get("use_word_based_chunking", app_config.USE_WORD_BASED_CHUNKING)
-            
-            # Word-based chunking toggle with improved label
-            use_word_based = st.toggle("Chunking Method: Word-based (ON) / Character-based (OFF)", 
-                               value=previous_toggle_state,
-                               key="use_word_based_chunking",
-                               disabled=crawl_in_progress)
-            
-            # Check if toggle state changed and force a rerun
-            if "use_word_based_chunking" in st.session_state and previous_toggle_state != st.session_state.use_word_based_chunking:
-                # Store the new state before rerunning
-                st.session_state.chunking_mode_changed = True
-                st.rerun()
-            
-            if use_word_based:
-                # Word-based chunking settings
+            if st.session_state.use_word_based_chunking:
+                # Word-based chunking UI
                 st.info("Using word-based chunking (recommended for better semantic coherence)")
-                st.number_input("Chunk Size (words)", min_value=app_config.MIN_CHUNK_WORDS, 
-                            max_value=app_config.MAX_CHUNK_WORDS,
-                            value=app_config.DEFAULT_CHUNK_WORDS, 
-                            key="chunk_words",
-                            help="Target number of words per chunk",
-                            disabled=crawl_in_progress)
+                word_chunk_size = st.number_input("Chunk Size (words)", 
+                    min_value=app_config.MIN_CHUNK_WORDS, 
+                    max_value=app_config.MAX_CHUNK_WORDS,
+                    value=app_config.DEFAULT_CHUNK_WORDS, 
+                    key="chunk_words",
+                    help="Target number of words per chunk",
+                    disabled=crawl_in_progress)
                 
-                # Calculate 25% of chunk size
-                if "chunk_words" in st.session_state:
-                    default_overlap = max(25, int(st.session_state.chunk_words * 0.25))
-                else:
-                    default_overlap = app_config.DEFAULT_OVERLAP_WORDS
-                
-                st.number_input("Overlap Size (words)", min_value=10, 
-                            max_value=200,
-                            value=default_overlap, 
-                            key="overlap_words",
-                            help="Number of words to overlap between chunks (recommended: 20-30% of chunk size)",
-                            disabled=crawl_in_progress)
+                # Calculate default overlap (25% of chunk size)
+                default_overlap = max(25, int(word_chunk_size * 0.25))
+                word_overlap = st.number_input("Overlap Size (words)", 
+                    min_value=10, max_value=200,
+                    value=default_overlap, 
+                    key="overlap_words",
+                    help="Number of words to overlap between chunks (20-30% recommended)",
+                    disabled=crawl_in_progress)
             else:
-                # Character-based chunking settings (legacy)
+                # Character-based chunking UI
                 st.warning("Using character-based chunking (legacy mode)")
-                st.number_input("Chunk Size (characters)", min_value=1000, 
-                            value=app_config.DEFAULT_CHUNK_SIZE, 
-                            key="chunk_size",
-                            help="Maximum number of characters per chunk (legacy mode)",
-                            disabled=crawl_in_progress)
+                st.number_input("Chunk Size (characters)", 
+                    min_value=1000, max_value=10000,
+                    value=app_config.DEFAULT_CHUNK_SIZE, 
+                    key="chunk_size",
+                    help="Maximum number of characters per chunk",
+                    disabled=crawl_in_progress)
             
             # Concurrency settings
             st.subheader("Concurrency Settings")
@@ -966,6 +998,16 @@ async def main():
                             else:
                                 st.error(f"Failed to delete {selected_source_name}")
             
+            # Display chat history first (before processing new input)
+            # This ensures messages appear in chronological order
+            for message in st.session_state.messages:
+                if message["role"] == "user":
+                    with st.chat_message("user"):
+                        st.markdown(message["content"])
+                else:
+                    with st.chat_message("assistant"):
+                        st.markdown(message["content"])
+            
             # Process user input
             if prompt := st.chat_input("Enter your question about the documentation"):
                 # Add user message to session state
@@ -975,10 +1017,6 @@ async def main():
                     "timestamp": time.time()
                 })
                 
-                # Display user message
-                with st.chat_message("user"):
-                    st.markdown(prompt)
-                
                 # Add assistant message to session state (we'll fill this with the response later)
                 st.session_state.messages.append({
                     "role": "model",
@@ -986,21 +1024,24 @@ async def main():
                     "timestamp": time.time()
                 })
                 
+                # Force a rerun to display the new messages and start generating the response
+                # We don't need to display anything here since the rerun will handle it
+                st.rerun()
+            
+            # Check if we need to generate a response for the last message
+            if (len(st.session_state.messages) >= 2 and 
+                st.session_state.messages[-2]["role"] == "user" and 
+                not st.session_state.messages[-1]["content"]):
+                
+                # Get the user's prompt from the second-to-last message
+                user_prompt = st.session_state.messages[-2]["content"]
+                
                 # Display the loading state for the assistant
                 with st.chat_message("assistant"):
                     st.write("Thinking...")
                 
                 # Generate response in a non-blocking way
-                await run_agent_with_streaming(prompt, st.session_state.selected_source)
-            
-            # Display chat history
-            for message in st.session_state.messages:
-                if message["role"] == "user":
-                    with st.chat_message("user"):
-                        st.markdown(message["content"])
-                else:
-                    with st.chat_message("assistant"):
-                        st.markdown(message["content"])
+                await run_agent_with_streaming(user_prompt, st.session_state.selected_source)
 
     # Add Sources tab
     with tabs[1]:

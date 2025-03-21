@@ -1,550 +1,590 @@
 # Operations Guide: Database Component
 
-This guide provides practical instructions for installing, configuring, and maintaining the PostgreSQL database with pgvector for the Agentic RAG system.
+This guide provides practical instructions for configuring, operating, and troubleshooting the database component of the Agentic RAG system.
 
 ## Table of Contents
 
 1. [System Overview](#system-overview)
-2. [Installation](#installation)
-3. [Configuration](#configuration)
-4. [Maintenance Tasks](#maintenance-tasks)
-5. [Performance Tuning](#performance-tuning)
+2. [Configuration](#configuration)
+3. [Database Initialization](#database-initialization)
+4. [Operational Tasks](#operational-tasks)
+5. [Monitoring and Optimization](#monitoring-and-optimization)
 6. [Troubleshooting](#troubleshooting)
 7. [Backup and Recovery](#backup-and-recovery)
-8. [FAQs](#faqs)
+8. [Frequently Asked Questions](#frequently-asked-questions)
 
 ## System Overview
 
-The database component consists of:
+The database component is responsible for:
 
-1. **PostgreSQL Database**: Stores documentation content, metadata, and vector embeddings
-2. **pgvector Extension**: Provides vector similarity search capabilities
-3. **Connection Pool**: Manages database connections efficiently
-4. **Schema Operations**: Handles database interactions for the application
+1. **Storing document content**: Text, metadata, and raw HTML content
+2. **Managing vector embeddings**: Storing and indexing embeddings for similarity search
+3. **Connection management**: Providing efficient database access through connection pooling
+4. **Vector similarity search**: Enabling fast and accurate retrieval of relevant content
+5. **Hybrid search capabilities**: Combining vector and text search for optimal results
 
-Key tables:
-- `documentation_sources`: Stores information about documentation sources
-- `site_pages`: Stores document chunks with their vector embeddings
+Key features of the database system:
 
-## Installation
-
-### PostgreSQL Setup
-
-1. **Install PostgreSQL**:
-   ```bash
-   # Ubuntu/Debian
-   sudo apt update
-   sudo apt install postgresql-14 postgresql-contrib-14
-   
-   # CentOS/RHEL
-   sudo dnf install postgresql14 postgresql14-server
-   sudo /usr/pgsql-14/bin/postgresql-14-setup initdb
-   sudo systemctl enable postgresql-14
-   sudo systemctl start postgresql-14
-   
-   # Windows
-   # Download and run the installer from https://www.postgresql.org/download/windows/
-   ```
-
-2. **Create Database and User**:
-   ```bash
-   # Access PostgreSQL
-   sudo -u postgres psql
-   
-   # Create database and user
-   CREATE DATABASE agentic_rag;
-   CREATE USER rag_user WITH ENCRYPTED PASSWORD 'your_password_here';
-   GRANT ALL PRIVILEGES ON DATABASE agentic_rag TO rag_user;
-   
-   # Connect to the database
-   \c agentic_rag
-   
-   # Grant necessary permissions
-   GRANT ALL ON SCHEMA public TO rag_user;
-   ```
-
-### pgvector Installation
-
-1. **Install Build Dependencies**:
-   ```bash
-   # Ubuntu/Debian
-   sudo apt install postgresql-server-dev-14 build-essential git
-   
-   # CentOS/RHEL
-   sudo dnf install postgresql14-devel gcc git
-   ```
-
-2. **Build and Install pgvector**:
-   ```bash
-   # Clone repository
-   git clone https://github.com/pgvector/pgvector.git
-   cd pgvector
-   
-   # Build and install
-   make
-   sudo make install
-   ```
-
-3. **Enable Extension**:
-   ```bash
-   # Connect to your database
-   sudo -u postgres psql -d agentic_rag
-   
-   # Create extension
-   CREATE EXTENSION vector;
-   
-   # Verify installation
-   SELECT * FROM pg_extension WHERE extname = 'vector';
-   ```
-
-### Database Schema Setup
-
-1. **Run the Setup Script**:
-   ```bash
-   # Using the application's setup script
-   python scripts/setup_database.py
-   
-   # Or manually apply the schema
-   psql -U rag_user -d agentic_rag -f data/vector_schema_v2.sql
-   ```
-
-2. **Verify Setup**:
-   ```bash
-   # Connect to the database
-   psql -U rag_user -d agentic_rag
-   
-   # Check if tables exist
-   \dt
-   
-   # Sample query to test functionality
-   SELECT COUNT(*) FROM documentation_sources;
-   ```
+- Uses PostgreSQL with the pgvector extension
+- Supports asynchronous operations with psycopg3 (or synchronous with psycopg2)
+- Implements connection pooling for performance optimization
+- Provides hybrid search combining vector similarity with text search
+- Supports HNSW indexes for faster vector search
+- Maintains transaction safety with proper error handling
 
 ## Configuration
 
 ### Environment Variables
 
-Configure database connection in the `.env` file:
+The database component is configured through the following environment variables:
 
 ```
-# PostgreSQL Connection
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=agentic_rag
-POSTGRES_USER=rag_user
-POSTGRES_PASSWORD=your_password_here
+# Database connection
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=agentic_rag
+DB_USER=postgres
+DB_PASSWORD=your_password
 
-# Connection Pooling
-POSTGRES_MIN_CONNECTIONS=1
-POSTGRES_MAX_CONNECTIONS=10
+# Connection pool settings
+DB_POOL_MIN_CONN=1
+DB_POOL_MAX_CONN=10
+DB_POOL_TIMEOUT=30
+
+# Vector search settings
+VECTOR_SIMILARITY_THRESHOLD=0.7
+DEFAULT_MATCH_COUNT=5
+VECTOR_SEARCH_WEIGHT=0.7
+
+# Hybrid search settings
+ENABLE_HYBRID_SEARCH=true
+TEXT_SEARCH_WEIGHT=0.3
 ```
 
-### PostgreSQL Configuration
+### Configuration in `config.py`
 
-Optimize PostgreSQL settings in `postgresql.conf`:
-
-```
-# Memory Settings
-shared_buffers = 2GB                 # 25% of RAM for dedicated server
-work_mem = 64MB                      # Helps with complex sorting/joins
-maintenance_work_mem = 256MB         # For maintenance operations
-effective_cache_size = 6GB           # Estimate of available system cache
-
-# Query Planner
-random_page_cost = 1.1               # For SSD storage (default 4.0)
-
-# Write Ahead Log
-wal_buffers = 16MB                   # For busy systems
-checkpoint_completion_target = 0.9   # Spread out checkpoint I/O
-max_wal_size = 2GB                   # Maximum WAL size
-
-# Parallel Query
-max_parallel_workers_per_gather = 4  # For multi-core systems
-max_parallel_workers = 8             # Maximum parallel workers
-```
-
-### Connection Pooling Configuration
-
-Adjust connection pool parameters:
+Database settings can also be configured in the `src/config.py` file:
 
 ```python
-# In your code
-from src.db.connection import initialize_connection_pool
+# Database Configuration
+DATABASE = {
+    "host": os.environ.get("DB_HOST", "localhost"),
+    "port": int(os.environ.get("DB_PORT", 5432)),
+    "dbname": os.environ.get("DB_NAME", "agentic_rag"),
+    "user": os.environ.get("DB_USER", "postgres"),
+    "password": os.environ.get("DB_PASSWORD", ""),
+    "pool_min_conn": int(os.environ.get("DB_POOL_MIN_CONN", 1)),
+    "pool_max_conn": int(os.environ.get("DB_POOL_MAX_CONN", 10)),
+    "pool_timeout": int(os.environ.get("DB_POOL_TIMEOUT", 30)),
+}
 
-# For production with high concurrency
-initialize_connection_pool(
-    min_connections=5,  
-    max_connections=20
-)
-
-# For development
-initialize_connection_pool(
-    min_connections=1,
-    max_connections=5
-)
+# Vector Search Configuration
+VECTOR_SEARCH = {
+    "similarity_threshold": float(os.environ.get("VECTOR_SIMILARITY_THRESHOLD", 0.7)),
+    "default_match_count": int(os.environ.get("DEFAULT_MATCH_COUNT", 5)),
+    "vector_weight": float(os.environ.get("VECTOR_SEARCH_WEIGHT", 0.7)),
+    "text_weight": float(os.environ.get("TEXT_SEARCH_WEIGHT", 0.3)),
+    "enable_hybrid_search": os.environ.get("ENABLE_HYBRID_SEARCH", "true").lower() == "true",
+}
 ```
 
-## Maintenance Tasks
+## Database Initialization
 
-### Regular Maintenance
+### Setting Up PostgreSQL with pgvector
 
-1. **Database Vacuuming**:
-   ```sql
-   -- Basic vacuum (can run while system is online)
-   VACUUM ANALYZE;
+1. **Install PostgreSQL** (version 13 or higher recommended)
+
+2. **Install the pgvector extension**:
    
-   -- Full vacuum (requires exclusive lock)
-   VACUUM FULL ANALYZE;
+   For Ubuntu/Debian:
+   ```bash
+   sudo apt-get install postgresql-server-dev-13
+   git clone https://github.com/pgvector/pgvector.git
+   cd pgvector
+   make
+   sudo make install
    ```
 
-2. **Index Maintenance**:
+   For macOS with Homebrew:
+   ```bash
+   brew install postgresql@13
+   brew install pgvector
+   ```
+
+3. **Create the database**:
+   ```bash
+   createdb agentic_rag
+   ```
+
+4. **Enable the pgvector extension**:
    ```sql
-   -- Rebuild indexes
-   REINDEX TABLE site_pages;
-   
-   -- Rebuild specific index
-   REINDEX INDEX site_pages_embedding_idx;
+   psql -d agentic_rag -c 'CREATE EXTENSION IF NOT EXISTS vector;'
    ```
 
-3. **Statistics Update**:
-   ```sql
-   -- Update statistics
-   ANALYZE site_pages;
-   ANALYZE documentation_sources;
-   ```
+### Initializing the Database Schema
 
-### Performance Monitoring
-
-1. **Check Index Usage**:
-   ```sql
-   -- Check index usage statistics
-   SELECT 
-       relname as table_name,
-       indexrelname as index_name,
-       idx_scan as index_scans,
-       idx_tup_read as tuples_read,
-       idx_tup_fetch as tuples_fetched
-   FROM pg_stat_user_indexes
-   JOIN pg_stat_user_tables ON pg_stat_user_indexes.relname = pg_stat_user_tables.relname
-   ORDER BY idx_scan DESC;
-   ```
-
-2. **Identify Slow Queries**:
-   ```sql
-   -- Find slow queries
-   SELECT
-       query,
-       calls,
-       total_time,
-       mean_time,
-       rows
-   FROM pg_stat_statements
-   ORDER BY mean_time DESC
-   LIMIT 10;
-   ```
-
-3. **Connection Status**:
-   ```sql
-   -- Check active connections
-   SELECT 
-       datname as database,
-       usename as username,
-       application_name,
-       client_addr,
-       state,
-       query
-   FROM pg_stat_activity
-   WHERE state != 'idle';
-   ```
-
-### Scheduled Maintenance Tasks
-
-Set up cron jobs for regular maintenance:
+Run the schema initialization script:
 
 ```bash
-# /etc/cron.d/postgres-maintenance
-
-# Vacuum analyze every day at 2:30 AM
-30 2 * * * postgres /usr/bin/psql -d agentic_rag -c "VACUUM ANALYZE;"
-
-# Reindex every Sunday at 3:00 AM
-0 3 * * 0 postgres /usr/bin/psql -d agentic_rag -c "REINDEX TABLE site_pages;"
-
-# Update database statistics every day at 1:00 AM
-0 1 * * * postgres /usr/bin/psql -d agentic_rag -c "ANALYZE;"
+python -m src.db.init_db
 ```
 
-## Performance Tuning
+This script performs the following:
 
-### Vector Search Optimization
+1. Creates necessary tables if they don't exist
+2. Sets up vector indexes for similarity search
+3. Creates regular indexes for performance optimization
+4. Verifies the pgvector extension is properly installed
+5. Sets up schema version tracking
 
-1. **Adjust IVF Lists**:
-   ```sql
-   -- Drop existing index
-   DROP INDEX site_pages_embedding_idx;
-   
-   -- Recreate with optimized parameters
-   -- For ~100k vectors, 100-1000 lists is typically good
-   -- For ~1M vectors, try 1000-10000 lists
-   CREATE INDEX site_pages_embedding_idx ON site_pages 
-   USING ivfflat (embedding vector_cosine_ops) WITH (lists = 1000);
-   ```
+You can also initialize the database programmatically:
 
-2. **Choose Appropriate Vector Index Type**:
-   ```sql
-   -- For maximum accuracy (smaller datasets)
-   CREATE INDEX site_pages_exact_idx ON site_pages 
-   USING hnsw (embedding vector_cosine_ops);
-   
-   -- For speed with large datasets
-   CREATE INDEX site_pages_approx_idx ON site_pages 
-   USING ivfflat (embedding vector_cosine_ops) WITH (lists = 1000);
-   ```
+```python
+from src.db.schema import setup_database
 
-3. **Partition Large Tables**:
-   ```sql
-   -- Create partitioned table by source_id
-   CREATE TABLE site_pages_partitioned (
-       id SERIAL,
-       url TEXT,
-       -- other columns
-       source_id TEXT,
-       embedding VECTOR(1536)
-   ) PARTITION BY LIST (source_id);
-   
-   -- Create partitions for each source
-   CREATE TABLE site_pages_python PARTITION OF site_pages_partitioned 
-   FOR VALUES IN ('python_docs');
-   
-   CREATE TABLE site_pages_javascript PARTITION OF site_pages_partitioned 
-   FOR VALUES IN ('javascript_docs');
-   ```
+async def initialize():
+    success = await setup_database()
+    if success:
+        print("Database initialized successfully")
+    else:
+        print("Failed to initialize database")
+```
 
-### Query Optimization
+## Operational Tasks
 
-1. **Use Prepared Statements**:
-   ```python
-   # Prepare statement once
-   cur.execute(
-       "PREPARE embedding_search AS "
-       "SELECT id, url, title, content, embedding <=> $1 AS similarity "
-       "FROM site_pages "
-       "ORDER BY similarity ASC "
-       "LIMIT $2"
-   )
-   
-   # Execute multiple times with different parameters
-   cur.execute("EXECUTE embedding_search(%s, %s)", (embedding, 10))
-   ```
+### Managing Documentation Sources
 
-2. **Create Composite Indexes**:
-   ```sql
-   -- For common query patterns
-   CREATE INDEX site_pages_metadata_filter_idx 
-   ON site_pages ((metadata->>'source_id'), (metadata->>'doc_type'));
-   ```
+#### Add a Documentation Source
 
-3. **Optimize JSONB Operations**:
-   ```sql
-   -- Create GIN index on all metadata
-   CREATE INDEX site_pages_metadata_all_idx 
-   ON site_pages USING GIN (metadata);
-   
-   -- Create index on specific metadata fields
-   CREATE INDEX site_pages_source_id_idx 
-   ON site_pages ((metadata->>'source_id'));
-   ```
+```python
+from src.db.schema import add_documentation_source
+
+async def add_new_source():
+    source_id = await add_documentation_source(
+        name="Python Documentation",
+        url="https://docs.python.org"
+    )
+    print(f"Added source with ID: {source_id}")
+```
+
+#### List All Documentation Sources
+
+```python
+from src.db.schema import get_documentation_sources
+
+async def list_sources():
+    sources = await get_documentation_sources()
+    for source in sources:
+        print(f"ID: {source['id']}, Name: {source['name']}, Status: {source['status']}")
+```
+
+#### Update a Documentation Source
+
+```python
+from src.db.schema import update_documentation_source
+
+async def update_source(source_id):
+    await update_documentation_source(
+        source_id=source_id,
+        status="completed",
+        pages_count=250
+    )
+    print(f"Updated source {source_id}")
+```
+
+#### Delete a Documentation Source
+
+```python
+from src.db.schema import delete_documentation_source
+
+async def remove_source(source_id):
+    success = await delete_documentation_source(source_id)
+    if success:
+        print(f"Deleted source {source_id} and all associated pages")
+    else:
+        print(f"Failed to delete source {source_id}")
+```
+
+### Managing Site Pages
+
+#### Add a Site Page
+
+```python
+from src.db.schema import add_site_page
+
+async def add_page(source_id, url, content, embedding):
+    page_id = await add_site_page(
+        url=url,
+        chunk_number=1,
+        title="Page Title",
+        summary="Page summary",
+        content=content,
+        metadata={"source_id": source_id},
+        embedding=embedding,
+        raw_content="<html>...</html>",  # Optional raw HTML
+        text_embedding=text_embedding    # Optional text embedding
+    )
+    print(f"Added page with ID: {page_id}")
+```
+
+#### Batch Insert Pages
+
+```python
+from src.db.schema import batch_insert_pages
+
+async def add_multiple_pages(pages_data):
+    """Add multiple pages in a single transaction."""
+    success = await batch_insert_pages(pages_data)
+    if success:
+        print(f"Added {len(pages_data)} pages successfully")
+    else:
+        print("Failed to add pages")
+```
+
+#### Delete Pages for a URL
+
+```python
+from src.db.schema import delete_pages_by_url
+
+async def remove_pages(url):
+    count = await delete_pages_by_url(url)
+    print(f"Deleted {count} pages for URL: {url}")
+```
+
+### Vector Search Operations
+
+#### Basic Vector Search
+
+```python
+from src.db.schema import match_site_pages
+
+async def search_similar_content(query_embedding):
+    results = await match_site_pages(
+        query_embedding=query_embedding,
+        match_count=5,
+        match_threshold=0.7
+    )
+    
+    for result in results:
+        print(f"URL: {result['url']}")
+        print(f"Title: {result['title']}")
+        print(f"Similarity: {result['similarity']:.4f}")
+        print(f"Content: {result['content'][:100]}...\n")
+```
+
+#### Hybrid Search (Vector + Text)
+
+```python
+from src.db.schema import hybrid_search
+
+async def search_with_hybrid(query_text, query_embedding):
+    results = await hybrid_search(
+        query_text=query_text,
+        query_embedding=query_embedding,
+        vector_weight=0.7,  # 70% vector, 30% text
+        match_count=5
+    )
+    
+    for result in results:
+        print(f"URL: {result['url']}")
+        print(f"Title: {result['title']}")
+        print(f"Combined Score: {result['score']:.4f}")
+        print(f"Content: {result['content'][:100]}...\n")
+```
+
+#### Search with Metadata Filters
+
+```python
+from src.db.schema import filter_by_metadata
+
+async def search_with_filters(query_embedding, source_name):
+    results = await filter_by_metadata(
+        query_embedding=query_embedding,
+        match_count=5,
+        metadata_filters={"source_name": source_name}
+    )
+    
+    for result in results:
+        print(f"URL: {result['url']}")
+        print(f"Title: {result['title']}")
+        print(f"Similarity: {result['similarity']:.4f}")
+```
+
+## Monitoring and Optimization
+
+### Database Performance Monitoring
+
+Monitor database performance using:
+
+```python
+from src.db.monitoring import get_database_stats
+
+async def monitor_db_performance():
+    stats = await get_database_stats()
+    print(f"Total documentation sources: {stats['sources_count']}")
+    print(f"Total pages: {stats['pages_count']}")
+    print(f"Average query time: {stats['avg_query_time_ms']} ms")
+    print(f"Connection pool usage: {stats['pool_used']}/{stats['pool_total']}")
+    print(f"Slow queries (>500ms): {stats['slow_queries_count']}")
+```
+
+### Connection Pool Monitoring
+
+Monitor the connection pool status:
+
+```python
+from src.db.connection import get_pool_status
+
+async def check_pool():
+    status = await get_pool_status()
+    print(f"Total connections: {status['size']}")
+    print(f"Used connections: {status['used']}")
+    print(f"Free connections: {status['free']}")
+    print(f"Min connections: {status['min']}")
+    print(f"Max connections: {status['max']}")
+```
+
+### Query Performance Analysis
+
+Analyze slow queries in the database:
+
+```python
+from src.db.monitoring import analyze_slow_queries
+
+async def check_slow_queries():
+    slow_queries = await analyze_slow_queries(threshold_ms=500)
+    for query in slow_queries:
+        print(f"Query: {query['query']}")
+        print(f"Execution time: {query['execution_time_ms']} ms")
+        print(f"Frequency: {query['count']}")
+        print(f"Suggested indexes: {query['suggested_indexes']}\n")
+```
+
+### Vector Index Optimization
+
+Optimize vector indexes for better performance:
+
+```python
+from src.db.schema import optimize_vector_indexes
+
+async def optimize_indexes():
+    await optimize_vector_indexes()
+    print("Vector indexes optimized")
+```
 
 ## Troubleshooting
 
-### Common Issues
+### Common Issues and Solutions
 
-| Problem | Possible Causes | Solution |
-|---------|----------------|----------|
-| Connection failures | Wrong credentials<br>Firewall issues<br>PostgreSQL not running | Check `.env` file<br>Verify firewall settings<br>Restart PostgreSQL |
-| Slow queries | Missing indexes<br>Outdated statistics<br>Insufficient resources | Create appropriate indexes<br>Run ANALYZE<br>Increase memory allocation |
-| Out of connections | Connection leaks<br>Pool exhaustion | Check for unreleased connections<br>Increase max_connections |
-| pgvector errors | Extension not installed<br>Incompatible version | Verify extension installation<br>Check PostgreSQL version compatibility |
-| High disk usage | Bloated tables<br>WAL files accumulation | Run VACUUM FULL<br>Check archiving settings |
+| Issue | Symptoms | Possible Cause | Solution |
+|-------|----------|----------------|----------|
+| Connection failures | "Could not connect to database" error | Incorrect connection settings or PostgreSQL not running | Check environment variables, verify PostgreSQL service is running |
+| Slow vector searches | Queries taking >500ms | Suboptimal index or too many results | Optimize indexes, reduce match_count, use filtered searches |
+| Out of connections | "Too many clients" error | Connection pool exhausted | Increase max_connections, check for connection leaks |
+| pgvector not found | "Extension 'vector' not available" | Extension not installed or enabled | Install pgvector, run CREATE EXTENSION |
+| Transaction deadlocks | "Deadlock detected" error | Concurrent transactions modifying same rows | Implement retry logic, review transaction isolation levels |
+| High memory usage | Server running slowly, OOM errors | Large result sets or inefficient queries | Limit result sizes, optimize queries, add more specific WHERE clauses |
 
-### Diagnostic Queries
+### Diagnostic Tools
 
-1. **Check Database Size**:
-   ```sql
-   -- Overall database size
-   SELECT pg_size_pretty(pg_database_size('agentic_rag'));
-   
-   -- Table sizes
-   SELECT 
-       relname as table_name,
-       pg_size_pretty(pg_total_relation_size(relid)) as total_size,
-       pg_size_pretty(pg_relation_size(relid)) as table_size,
-       pg_size_pretty(pg_total_relation_size(relid) - pg_relation_size(relid)) as index_size
-   FROM pg_catalog.pg_statio_user_tables
-   ORDER BY pg_total_relation_size(relid) DESC;
-   ```
+#### Check Database Connection
 
-2. **Identify Unused Indexes**:
-   ```sql
-   -- Find unused indexes
-   SELECT
-       indexrelid::regclass as index_name,
-       relid::regclass as table_name,
-       idx_scan as scans_count
-   FROM pg_stat_user_indexes
-   WHERE idx_scan = 0
-   ORDER BY pg_relation_size(indexrelid) DESC;
-   ```
+```python
+from src.db.utils import check_database_connection
 
-3. **Check Connection Status**:
-   ```sql
-   -- Check connection states
-   SELECT state, count(*) FROM pg_stat_activity GROUP BY state;
-   
-   -- Find long-running queries
-   SELECT pid, now() - query_start as duration, query
-   FROM pg_stat_activity
-   WHERE state = 'active' AND now() - query_start > interval '5 minutes'
-   ORDER BY duration DESC;
-   ```
+async def verify_connection():
+    status = await check_database_connection()
+    if status["connected"]:
+        print(f"Connected to {status['database']} as {status['user']}")
+        print(f"Server version: {status['version']}")
+        print(f"pgvector installed: {status['pgvector_installed']}")
+    else:
+        print(f"Connection failed: {status['error']}")
+```
 
-### Troubleshooting PostgreSQL Logs
+#### Verify Vector Extension
 
-1. **Find Log Location**:
-   ```sql
-   SHOW log_directory;
-   SHOW log_filename;
-   ```
+```python
+from src.db.utils import verify_pgvector
 
-2. **Increase Log Verbosity Temporarily**:
-   ```sql
-   -- Set log level to debug (check current with SHOW log_min_messages)
-   ALTER SYSTEM SET log_min_messages = 'debug1';
-   
-   -- Apply changes
-   SELECT pg_reload_conf();
-   
-   -- After troubleshooting, reset to default
-   ALTER SYSTEM SET log_min_messages = 'warning';
-   SELECT pg_reload_conf();
-   ```
+async def check_pgvector():
+    installed = await verify_pgvector()
+    if installed:
+        print("pgvector extension is properly installed")
+    else:
+        print("pgvector extension is NOT installed or enabled")
+```
 
-3. **Enable Query Logging**:
-   ```sql
-   -- Log all queries
-   ALTER SYSTEM SET log_statement = 'all';
-   
-   -- Log slow queries
-   ALTER SYSTEM SET log_min_duration_statement = '1000';  -- 1 second
-   
-   -- Apply changes
-   SELECT pg_reload_conf();
-   ```
+#### Run Database Health Check
+
+```python
+from src.db.monitoring import run_health_check
+
+async def health_check():
+    results = await run_health_check()
+    for check, status in results.items():
+        print(f"{check}: {'✅ PASS' if status['passed'] else '❌ FAIL'}")
+        if not status["passed"]:
+            print(f"  Error: {status['error']}")
+            print(f"  Recommendation: {status['recommendation']}")
+```
 
 ## Backup and Recovery
 
-### Backup Procedures
+### Backing Up the Database
 
-1. **Using pg_dump**:
-   ```bash
-   # Full database backup
-   pg_dump -U rag_user -d agentic_rag -f backup.sql
-   
-   # Compressed backup
-   pg_dump -U rag_user -d agentic_rag | gzip > backup.sql.gz
-   
-   # Custom-format backup (allows selective restore)
-   pg_dump -U rag_user -Fc -d agentic_rag -f backup.custom
-   ```
+Daily backups are recommended:
 
-2. **Scheduled Backups**:
-   ```bash
-   # /etc/cron.d/postgres-backup
-   
-   # Daily backup at 1:00 AM
-   0 1 * * * postgres /usr/bin/pg_dump -U rag_user -Fc -d agentic_rag -f /backups/agentic_rag_$(date +\%Y\%m\%d).custom
-   
-   # Keep only last 30 days of backups
-   0 2 * * * postgres find /backups -name "agentic_rag_*.custom" -mtime +30 -delete
-   ```
+```bash
+# Backup the entire database
+pg_dump -h localhost -U postgres -d agentic_rag -F c -f backup_$(date +"%Y%m%d").dump
 
-3. **Continuous Archiving (WAL)**:
-   
-   In `postgresql.conf`:
+# Backup only the site_pages table
+pg_dump -h localhost -U postgres -d agentic_rag -t site_pages -F c -f site_pages_$(date +"%Y%m%d").dump
+```
+
+Automated backup script (can be added to cron):
+
+```bash
+#!/bin/bash
+BACKUP_DIR="/path/to/backups"
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+DB_HOST="localhost"
+DB_USER="postgres"
+DB_NAME="agentic_rag"
+
+# Create backup directory if it doesn't exist
+mkdir -p $BACKUP_DIR
+
+# Perform backup
+pg_dump -h $DB_HOST -U $DB_USER -d $DB_NAME -F c -f "$BACKUP_DIR/backup_$TIMESTAMP.dump"
+
+# Clean up old backups (keep only last 7 days)
+find $BACKUP_DIR -name "backup_*.dump" -type f -mtime +7 -delete
+```
+
+### Restoring from Backup
+
+To restore the database from a backup:
+
+```bash
+# Create a new database if needed
+createdb -h localhost -U postgres agentic_rag_restored
+
+# Restore from backup
+pg_restore -h localhost -U postgres -d agentic_rag_restored backup_20230101.dump
+```
+
+### Point-in-Time Recovery
+
+For critical deployments, configure PostgreSQL with Write-Ahead Logging (WAL) for point-in-time recovery:
+
+1. Edit `postgresql.conf`:
    ```
    wal_level = replica
    archive_mode = on
    archive_command = 'cp %p /path/to/archive/%f'
    ```
 
-### Recovery Procedures
+2. Restart PostgreSQL to apply changes.
 
-1. **Restore from pg_dump**:
+3. Perform a base backup:
    ```bash
-   # SQL format
-   psql -U rag_user -d agentic_rag < backup.sql
-   
-   # Custom format
-   pg_restore -U rag_user -d agentic_rag backup.custom
+   pg_basebackup -h localhost -U postgres -D /path/to/backup -Ft -z
    ```
 
-2. **Point-in-Time Recovery**:
-   
-   Create `recovery.conf`:
-   ```
-   restore_command = 'cp /path/to/archive/%f %p'
-   recovery_target_time = '2023-03-15 12:00:00'
-   ```
-
-3. **Selective Table Restore**:
-   ```bash
-   # Extract just the table you need
-   pg_restore -U rag_user -t site_pages -d agentic_rag backup.custom
-   ```
-
-## FAQs
+## Frequently Asked Questions
 
 ### General Questions
 
-#### What PostgreSQL version is required?
-PostgreSQL 13 or higher is required for pgvector compatibility. PostgreSQL 14 or 15 is recommended for optimal performance.
+**Q: How much disk space do embeddings require?**
 
-#### How much disk space is needed?
-Plan for approximately 2-5KB per document chunk, plus additional space for indexes. For 100,000 document chunks, allocate at least 1GB plus 50% overhead.
+A: Each embedding vector requires approximately 6KB of storage (1536 dimensions × 4 bytes per float). For 100,000 document chunks, this would require about 600MB for embeddings alone.
 
-#### Can I use a managed PostgreSQL service?
-Yes, you can use any managed PostgreSQL service that supports extensions, such as Amazon RDS, Azure Database for PostgreSQL, or Google Cloud SQL. Ensure the pgvector extension is available.
+**Q: Do I need to recreate indexes when upgrading PostgreSQL?**
+
+A: No, PostgreSQL preserves indexes during upgrades. However, after major version upgrades, it's recommended to run `REINDEX` to ensure optimal performance.
+
+**Q: How can I migrate from psycopg2 to psycopg3?**
+
+A: The database layer automatically detects which driver is available and uses the appropriate interface. Simply install psycopg3 with `pip install psycopg[binary]`, and the system will use it if available.
 
 ### Technical Questions
 
-#### How can I monitor the connection pool?
-Use `pg_stat_activity` view to monitor active connections:
-```sql
-SELECT count(*) FROM pg_stat_activity WHERE application_name = 'YourAppName';
+**Q: How can I tune vector search performance?**
+
+A: To improve vector search performance:
+1. Use HNSW indexes instead of IVF indexes for better performance
+2. Adjust vector_weight in hybrid_search based on your needs
+3. Use more specific metadata filters to reduce the search space
+4. Consider lowering match_count if you don't need many results
+
+**Q: How do I handle schema migrations?**
+
+A: Use the versioned schema migration system:
+
+```python
+from src.db.schema import run_migration
+
+async def migrate_database():
+    # Apply the latest migration
+    success = await run_migration()
+    if success:
+        print("Migration completed successfully")
+    else:
+        print("Migration failed")
 ```
 
-#### How often should I vacuum the database?
-For production systems with regular updates:
-- Automatic vacuum should handle most cases
-- Run manual `VACUUM ANALYZE` weekly
-- Consider `VACUUM FULL` monthly during low-traffic periods
+**Q: Can I use multiple vector indexes with different dimensions?**
 
-#### What is the optimal chunk size for vector operations?
-For pgvector operations with 1536-dimensional embeddings, maintain less than 1 million vectors per table for optimal performance. Consider partitioning or sharding for larger datasets.
+A: Yes, you can create different tables for different embedding models and dimensions:
 
-### Optimization Questions
+```sql
+-- For 1536-dimension OpenAI embeddings
+CREATE TABLE site_pages_openai (
+    id SERIAL PRIMARY KEY,
+    page_id INTEGER REFERENCES site_pages(id),
+    embedding VECTOR(1536)
+);
 
-#### How can I speed up vector searches?
-1. Increase `work_mem` for larger in-memory operations
-2. Adjust IVF lists based on your dataset size
-3. Consider approximate nearest neighbor (ANN) indexes for large datasets
-4. Partition tables by source_id or other frequently filtered fields
+-- For 768-dimension BERT embeddings
+CREATE TABLE site_pages_bert (
+    id SERIAL PRIMARY KEY,
+    page_id INTEGER REFERENCES site_pages(id),
+    embedding VECTOR(768)
+);
+```
 
-#### Should I use connection pooling with pgvector?
-Yes, connection pooling is strongly recommended as it reduces the overhead of establishing new connections and makes better use of prepared statements and session-level optimizations.
+**Q: How do I optimize the PostgreSQL configuration for vector search?**
 
-#### How can I optimize for concurrent write operations?
-1. Set appropriate `max_wal_size` to reduce checkpoint frequency
-2. Increase `maintenance_work_mem` for faster vacuum operations
-3. Batch inserts into single transactions
-4. Consider disabling indexes during bulk loads, then rebuilding afterward 
+A: Key PostgreSQL settings to adjust:
+- `maintenance_work_mem`: Increase to 1GB or more for index creation
+- `effective_cache_size`: Set to 75% of available memory
+- `shared_buffers`: Set to 25% of available memory
+- `work_mem`: Increase to 64MB or more for complex vector queries
+- `random_page_cost`: Lower to 1.1 for SSD storage
+
+### Troubleshooting Questions
+
+**Q: Why are my vector searches returning low similarity scores?**
+
+A: This could be due to:
+1. Embeddings generated with different models or parameters
+2. Content not semantically related to queries
+3. Need for normalization - ensure vectors are normalized before storing
+
+**Q: Database connections are being exhausted. What should I check?**
+
+A: Look for:
+1. Connection leaks - ensure all connections are properly released
+2. Increase the connection pool maximum (DB_POOL_MAX_CONN)
+3. Add connection timeout handling to release stale connections
+4. Implement a connection usage log to identify where connections are being used
+
+**Q: Why is the pgvector extension not found even after installation?**
+
+A: Common causes:
+1. Extension not created in the specific database: run `CREATE EXTENSION vector;`
+2. PostgreSQL server restarted without loading the extension
+3. pgvector installed for a different PostgreSQL version
+4. Extension library not in PostgreSQL's extension directory 

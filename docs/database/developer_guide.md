@@ -45,450 +45,521 @@ The architecture follows these key principles:
 The connection manager handles database connections and pooling:
 
 ```python
-from src.db.connection import initialize_connection_pool, get_connection, release_connection
+from src.db.connection import get_connection_pool, get_db_connection, execute_query, execute_transaction
 
-# Initialize the connection pool
-initialize_connection_pool(min_connections=1, max_connections=10)
+# Get a connection pool
+pool = await get_connection_pool()
 
-# Get a connection from the pool
-conn = get_connection()
+# Execute a query with automatic connection handling
+result = await execute_query(
+    "SELECT * FROM documentation_sources WHERE name = %s",
+    ("Python Documentation",)
+)
 
-try:
-    # Use the connection
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM documentation_sources")
-    sources = cur.fetchall()
-finally:
-    # Always release the connection back to the pool
-    release_connection(conn)
+# Execute multiple operations in a transaction
+success = await execute_transaction([
+    ("INSERT INTO documentation_sources (name, url) VALUES (%s, %s) RETURNING id", 
+     ("Python Documentation", "https://docs.python.org")),
+    ("INSERT INTO site_pages (url, source_id) VALUES (%s, %s)",
+     ("https://docs.python.org/index.html", 1))
+])
 ```
 
-### 2. Schema Operations (`src/db/schema.py`)
+The connection module now supports:
+- Automatic detection of psycopg2 vs psycopg3
+- Connection pooling for better performance
+- Robust error handling with proper transaction management
+- Automatic retries with exponential backoff
 
-Core database operations for the application:
+### 2. Database Schema Operations (`src/db/schema.py`)
+
+This module provides higher-level database operations:
 
 ```python
-from src.db.schema import add_documentation_source, add_site_page, match_site_pages
+from src.db.schema import (
+    add_documentation_source,
+    add_site_page,
+    match_site_pages,
+    hybrid_search,
+    get_documentation_sources,
+    delete_documentation_source
+)
 
 # Add a new documentation source
-source_id = add_documentation_source(
-    name="Python Documentation",
-    source_id="python_docs",
-    base_url="https://docs.python.org/3/",
-    configuration={"language": "python", "version": "3.10"}
-)
-
-# Add a new page with its embedding
-page_id = add_site_page(
-    url="https://docs.python.org/3/tutorial/index.html",
-    chunk_number=0,
-    title="The Python Tutorial",
-    summary="This tutorial introduces the reader to the basic concepts and features of Python.",
-    content="Python is an easy to learn, powerful programming language...",
-    metadata={"source_id": "python_docs", "page_type": "tutorial"},
-    embedding=[0.1, 0.2, ..., 0.3]  # Vector embedding
-)
-
-# Find similar pages
-results = match_site_pages(
-    query_embedding=[0.1, 0.2, ..., 0.3],  # Query embedding
-    match_count=5,
-    filter_metadata={"source_id": "python_docs"}
-)
-```
-
-### 3. Asynchronous Operations (`src/db/async_schema.py`)
-
-Asynchronous database operations for non-blocking code:
-
-```python
-from src.db.async_schema import add_documentation_source, add_site_page
-
-# Add source asynchronously
 source_id = await add_documentation_source(
     name="Python Documentation",
-    source_id="python_docs",
-    base_url="https://docs.python.org/3/",
-    configuration={"language": "python", "version": "3.10"}
+    url="https://docs.python.org"
 )
 
-# Add page asynchronously
+# Store a processed page
 page_id = await add_site_page(
-    url="https://docs.python.org/3/tutorial/index.html",
-    chunk_number=0,
-    title="The Python Tutorial",
-    summary="Summary of the page",
-    content="Page content...",
-    metadata={"source_id": "python_docs"},
-    embedding=[0.1, 0.2, ..., 0.3]
+    url="https://docs.python.org/tutorial/index.html",
+    chunk_number=1,
+    title="Python Tutorial",
+    summary="Introduction to Python basics",
+    content="Detailed content here...",
+    metadata={"source_id": source_id, "section": "Tutorial"},
+    embedding=[0.1, 0.2, ...],  # Vector embedding
+    raw_content="<html>Original HTML</html>",  # Optional raw HTML
+    text_embedding=[0.2, 0.3, ...]  # Optional separate text embedding
+)
+
+# Perform vector similarity search
+results = await match_site_pages(
+    query_embedding=[0.1, 0.2, ...],
+    match_count=5,
+    match_threshold=0.7
+)
+
+# Perform hybrid search (vector + keyword)
+results = await hybrid_search(
+    query_text="async function Python",
+    query_embedding=[0.1, 0.2, ...],
+    vector_weight=0.7,  # Weight for vector similarity vs text search
+    match_count=5
 )
 ```
 
-### 4. Driver Compatibility Layer (`src/db/db_utils.py`)
+### 3. Asynchronous Schema Operations (`src/db/async_schema.py`)
 
-Provides compatibility between psycopg2 and psycopg3:
+This module provides asynchronous database operations:
 
 ```python
-from src.db.db_utils import is_psycopg3_available, is_database_available
+from src.db.async_schema import (
+    add_documentation_source,
+    update_documentation_source,
+    add_site_page,
+    delete_documentation_source
+)
 
-# Check which driver is available
-if is_psycopg3_available():
-    print("Using psycopg3 (async capable)")
-else:
-    print("Using psycopg2 (sync only)")
+# Add a new documentation source
+source_id = await add_documentation_source(
+    name="FastAPI Documentation",
+    url="https://fastapi.tiangolo.com"
+)
 
-# Check database connectivity
-if is_database_available():
-    print("Database is available")
-else:
-    print("Database is not available")
+# Update a source
+await update_documentation_source(
+    source_id=source_id,
+    status="completed",
+    pages_count=250,
+    completed_at="2023-01-15T12:00:00Z"
+)
+
+# Store a page with enhanced error handling
+try:
+    page_id = await add_site_page(
+        url="https://fastapi.tiangolo.com/tutorial/first-steps/",
+        chunk_number=1,
+        title="First Steps",
+        summary="Getting started with FastAPI",
+        content="Content goes here...",
+        metadata={"source_id": source_id},
+        embedding=[0.1, 0.2, ...],
+        raw_content="<html>...</html>",  # Now supports raw HTML storage
+        text_embedding=[0.2, 0.3, ...]   # Now supports separate text embeddings
+    )
+    print(f"Page added with ID: {page_id}")
+except Exception as e:
+    print(f"Error adding page: {e}")
+```
+
+### 4. Database Compatibility Layer (`src/db/db_utils.py`)
+
+This module provides compatibility functions for different database drivers:
+
+```python
+from src.db.db_utils import (
+    get_driver_type,
+    is_using_psycopg3,
+    adapt_query_params,
+    get_cursor_factory
+)
+
+# Check which driver is being used
+driver_type = get_driver_type()
+print(f"Using {'psycopg3' if is_using_psycopg3() else 'psycopg2'}")
+
+# Get the appropriate cursor factory
+cursor_factory = get_cursor_factory()
+
+# Adapt query parameters for the current driver
+adapted_params = adapt_query_params(params, is_using_psycopg3())
 ```
 
 ## Database Schema
 
-### Main Tables
+### Key Tables
 
-The database consists of two primary tables:
-
-#### `documentation_sources`
-
-Stores information about documentation sources:
-
-| Column | Type | Description |
-|--------|------|-------------|
-| id | SERIAL | Primary key |
-| name | TEXT | Name of the documentation source |
-| source_id | TEXT | Unique identifier for the source |
-| base_url | TEXT | Base URL of the documentation |
-| configuration | JSONB | Configuration options (JSON) |
-| created_at | TIMESTAMP | Creation timestamp |
-| last_crawled_at | TIMESTAMP | Last crawl timestamp |
-| pages_count | INTEGER | Number of pages |
-| chunks_count | INTEGER | Number of chunks |
-| status | TEXT | Status (active, crawling, etc.) |
-
-#### `site_pages`
-
-Stores document chunks with their embeddings:
-
-| Column | Type | Description |
-|--------|------|-------------|
-| id | SERIAL | Primary key |
-| url | TEXT | URL of the page |
-| chunk_number | INTEGER | Chunk sequence number |
-| title | TEXT | Title of the chunk |
-| summary | TEXT | Summary of the chunk |
-| content | TEXT | Content of the chunk |
-| raw_content | TEXT | Raw HTML content (optional) |
-| metadata | JSONB | Metadata (JSON) |
-| embedding | VECTOR | Vector embedding for similarity search |
-| text_embedding | VECTOR | Optional secondary embedding |
-| created_at | TIMESTAMP | Creation timestamp |
-| updated_at | TIMESTAMP | Last update timestamp |
-
-### Key Indexes
-
-Important indexes for performance:
+#### 1. Documentation Sources
 
 ```sql
--- Primary indexes
-CREATE INDEX site_pages_url_idx ON site_pages(url);
-CREATE INDEX site_pages_metadata_idx ON site_pages USING GIN (metadata);
+CREATE TABLE documentation_sources (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    url TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(50) DEFAULT 'pending',
+    pages_count INTEGER DEFAULT 0,
+    completed_at TIMESTAMP WITH TIME ZONE
+);
+```
 
--- Vector indexes
-CREATE INDEX site_pages_embedding_idx ON site_pages 
-USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+#### 2. Site Pages
+
+```sql
+CREATE TABLE site_pages (
+    id SERIAL PRIMARY KEY,
+    url TEXT NOT NULL,
+    chunk_number INTEGER NOT NULL,
+    source_id INTEGER REFERENCES documentation_sources(id) ON DELETE CASCADE,
+    title TEXT,
+    summary TEXT,
+    content TEXT NOT NULL,
+    raw_content TEXT,  -- New: stores original HTML
+    metadata JSONB,
+    embedding VECTOR(1536),  -- Using pgvector type
+    text_embedding VECTOR(1536),  -- New: separate embedding for text search
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (url, chunk_number)
+);
+```
+
+### Indexes
+
+```sql
+-- Regular indexes
+CREATE INDEX idx_site_pages_source_id ON site_pages(source_id);
+CREATE INDEX idx_site_pages_url ON site_pages(url);
+
+-- JSON path operators for metadata search
+CREATE INDEX idx_site_pages_metadata ON site_pages USING GIN (metadata);
+
+-- Vector indexes (new: HNSW index for faster search)
+CREATE INDEX site_pages_embedding_idx ON site_pages USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX site_pages_text_embedding_idx ON site_pages USING hnsw (text_embedding vector_cosine_ops);
 ```
 
 ## Integration Points
 
-### Database Initialization
+### 1. With Crawler Component
 
-To set up the database in your application:
+The database module integrates with the crawler component:
 
 ```python
-from src.db.schema import setup_database
+from src.db.async_schema import add_documentation_source, add_site_page
+from src.crawling.enhanced_docs_crawler import crawl_documentation, CrawlConfig
 
-# Initialize database schema
-if setup_database():
-    print("Database setup successful")
-else:
-    print("Database setup failed")
+async def crawl_and_store():
+    # Add a new documentation source
+    source_id = await add_documentation_source(
+        name="Python Documentation",
+        url="https://docs.python.org"
+    )
+    
+    # Configure and run the crawler
+    config = CrawlConfig(
+        name="Python Documentation",
+        sitemap_url="https://docs.python.org/3/sitemap.xml",
+        # Additional config...
+    )
+    
+    # The crawler will use add_site_page to store content
+    await crawl_documentation(config)
 ```
 
-### Adding Custom Tables
+### 2. With RAG Component
 
-To extend the schema with your own tables:
-
-1. Create a SQL file with your table definitions
-2. Use the schema creation function to apply it:
+The database module integrates with the RAG component:
 
 ```python
-from src.db.schema import create_schema_from_file
+from src.db.schema import match_site_pages, hybrid_search, get_page_content
+from src.rag.rag_expert import AgentyRagDeps, agentic_rag_expert
 
-# Apply your custom schema
-create_schema_from_file("path/to/your_schema.sql")
-```
-
-### Custom Queries
-
-For custom database operations:
-
-```python
-from src.db.connection import get_connection, release_connection
-
-def run_custom_query(param1, param2):
-    conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        
-        # Execute your custom query
-        cur.execute(
-            "SELECT * FROM your_table WHERE field1 = %s AND field2 = %s",
-            (param1, param2)
-        )
-        
-        return cur.fetchall()
-    finally:
-        if conn:
-            release_connection(conn)
+async def query_documentation(user_query, query_embedding):
+    # Use hybrid search for better results
+    search_results = await hybrid_search(
+        query_text=user_query,
+        query_embedding=query_embedding,
+        vector_weight=0.7,
+        match_count=5
+    )
+    
+    # Get full content for matches
+    contexts = []
+    for result in search_results:
+        page_content = await get_page_content(result["id"])
+        contexts.append({
+            "content": page_content["content"],
+            "url": page_content["url"],
+            "title": page_content["title"]
+        })
+    
+    # Feed to RAG agent
+    deps = AgentyRagDeps(openai_client=openai_client)
+    response = await agentic_rag_expert(user_query, contexts, deps)
+    return response
 ```
 
 ## Vector Search
 
-### Basic Vector Search
+### 1. Similarity Search
 
-Perform similarity search using vector embeddings:
+The system supports different search strategies:
 
 ```python
-from src.db.schema import match_site_pages
+from src.db.schema import match_site_pages, hybrid_search, filter_by_metadata
 
-# Find similar documents
-results = match_site_pages(
-    query_embedding=query_embedding,  # List[float]
-    match_count=10,
-    similarity_threshold=0.7
+# Basic vector similarity search
+results = await match_site_pages(
+    query_embedding=query_embedding,
+    match_count=5
 )
 
-# Process results
-for result in results:
-    print(f"URL: {result['url']}")
-    print(f"Title: {result['title']}")
-    print(f"Similarity: {result['similarity']}")
-    print(f"Content: {result['content'][:100]}...")
-```
-
-### Hybrid Search
-
-Combine vector similarity with text search:
-
-```python
-from src.db.schema import hybrid_search
-
-# Perform hybrid search
-results = hybrid_search(
-    query_text="python installation guide",
+# Hybrid search (vector + text)
+results = await hybrid_search(
+    query_text="Python async functions",
     query_embedding=query_embedding,
-    match_count=5,
-    vector_weight=0.7  # 70% vector similarity, 30% text match
+    vector_weight=0.7,  # 70% vector, 30% text
+    match_count=5
 )
-```
 
-### Filtered Search
-
-Filter search results by metadata:
-
-```python
-from src.db.schema import match_site_pages
-
-# Search with filters
-results = match_site_pages(
+# Filtered search
+results = await filter_by_metadata(
     query_embedding=query_embedding,
     match_count=5,
-    filter_metadata={
+    metadata_filters={
         "source_id": "python_docs",
-        "doc_type": "tutorial"
+        "section": "tutorial"
     }
+)
+```
+
+### 2. Advanced Vector Operations
+
+The system supports advanced vector operations:
+
+```python
+from src.db.schema import combine_vectors, search_by_document
+
+# Combine multiple vectors for composite search
+combined_embedding = await combine_vectors(
+    [embedding1, embedding2, embedding3],
+    weights=[0.6, 0.3, 0.1]
+)
+
+# Search for entire documents rather than chunks
+document_results = await search_by_document(
+    query_embedding=query_embedding,
+    match_count=3,
+    aggregation="max"  # Options: max, mean, weighted
 )
 ```
 
 ## Extending the System
 
-### Custom Search Functions
+### 1. Adding a New Table
 
-Create specialized search functions for your use case:
-
-```python
-def search_by_category(query_embedding, category, match_count=5):
-    """Search for documents in a specific category."""
-    conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor(cursor_factory=DictCursor)
-        
-        query = """
-        SELECT 
-            id, url, title, content, metadata,
-            embedding <=> %s AS similarity
-        FROM 
-            site_pages
-        WHERE 
-            metadata->>'category' = %s
-        ORDER BY 
-            similarity ASC
-        LIMIT %s;
-        """
-        
-        cur.execute(query, (query_embedding, category, match_count))
-        return cur.fetchall()
-    finally:
-        if conn:
-            release_connection(conn)
-```
-
-### Advanced Vector Operations
-
-For more advanced pgvector operations:
+To add a new table to the schema:
 
 ```python
-def find_document_clusters(embedding_centroid, radius=0.3, limit=20):
-    """Find clusters of similar documents within a radius."""
-    conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor(cursor_factory=DictCursor)
-        
-        query = """
-        SELECT 
-            url,
-            metadata->>'source_id' AS source,
-            embedding <=> %s AS distance
-        FROM 
-            site_pages
-        WHERE
-            embedding <=> %s < %s
-        GROUP BY
-            url, source, distance
-        ORDER BY 
-            distance ASC
-        LIMIT %s;
-        """
-        
-        cur.execute(query, (embedding_centroid, embedding_centroid, radius, limit))
-        return cur.fetchall()
-    finally:
-        if conn:
-            release_connection(conn)
+# In src/db/schema.py
+async def setup_database():
+    # ... existing tables ...
+    
+    # Add new table
+    await execute_query("""
+    CREATE TABLE IF NOT EXISTS user_queries (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(255),
+        query TEXT NOT NULL,
+        embedding VECTOR(1536),
+        timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        feedback INTEGER
+    );
+    """)
+    
+    # Add indexes
+    await execute_query("""
+    CREATE INDEX IF NOT EXISTS idx_user_queries_user_id ON user_queries(user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_queries_embedding_idx ON user_queries USING hnsw (embedding vector_cosine_ops);
+    """)
 ```
 
-### Custom Indexing Strategies
+### 2. Implementing a Custom Search Method
 
-Create specialized indexes for your specific query patterns:
+To add a custom search method:
 
-```sql
--- For frequent filtering on a specific metadata field
-CREATE INDEX site_pages_source_id_idx ON site_pages ((metadata->>'source_id'));
+```python
+# In src/db/schema.py
+async def semantic_cluster_search(query_embedding, match_count=5):
+    """Search that returns diverse results from different semantic clusters."""
+    query = """
+    WITH initial_matches AS (
+        SELECT 
+            id, url, title, summary, content, metadata,
+            1 - (embedding <=> %s) AS similarity
+        FROM site_pages
+        WHERE 1 - (embedding <=> %s) > 0.7
+        ORDER BY similarity DESC
+        LIMIT 20
+    ),
+    clusters AS (
+        SELECT 
+            id, url, title, summary, content, metadata, similarity,
+            NTILE(5) OVER (ORDER BY embedding <=> %s) AS cluster
+        FROM initial_matches
+    )
+    SELECT id, url, title, summary, content, metadata, similarity
+    FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY cluster ORDER BY similarity DESC) AS rn
+        FROM clusters
+    ) ranked
+    WHERE rn = 1
+    ORDER BY similarity DESC
+    LIMIT %s;
+    """
+    
+    params = [query_embedding, query_embedding, query_embedding, match_count]
+    results = await execute_query(query, params)
+    return results
+```
 
--- For documents with temporal relevance 
-CREATE INDEX site_pages_created_idx ON site_pages (created_at DESC);
+### 3. Adding Support for a New Embedding Model
 
--- For combining metadata filtering with vector search
-CREATE INDEX site_pages_filtered_embedding_idx ON site_pages 
-USING ivfflat ((embedding)) 
-WHERE (metadata->>'importance')::int > 3;
+To add support for a different embedding dimension:
+
+```python
+# In src/db/schema.py
+async def setup_database_for_model(model_name, dimensions):
+    """Set up tables for a specific embedding model."""
+    # Create model-specific tables
+    await execute_query(f"""
+    CREATE TABLE IF NOT EXISTS site_pages_{model_name} (
+        id SERIAL PRIMARY KEY,
+        site_page_id INTEGER REFERENCES site_pages(id) ON DELETE CASCADE,
+        embedding VECTOR({dimensions}),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    
+    # Create appropriate indexes
+    await execute_query(f"""
+    CREATE INDEX IF NOT EXISTS idx_site_pages_{model_name}_embedding 
+    ON site_pages_{model_name} USING hnsw (embedding vector_cosine_ops);
+    """)
 ```
 
 ## Best Practices
 
-### Connection Management
+### 1. Connection Management
 
-1. **Always Release Connections**: Use try/finally blocks to ensure connections are returned to the pool
-2. **Connection Pooling**: Use the connection pool rather than creating new connections
-3. **Transaction Handling**: Explicitly commit or rollback transactions
+Always use the provided connection management functions:
 
 ```python
-conn = get_connection()
-try:
-    # Start a transaction
-    conn.autocommit = False
-    
-    # Perform multiple operations
-    # ...
-    
-    # Commit if successful
-    conn.commit()
-except Exception as e:
-    # Rollback on error
-    if conn:
-        conn.rollback()
-    raise
-finally:
-    # Always release the connection
-    if conn:
-        release_connection(conn)
+# Good - uses connection pooling and error handling
+result = await execute_query("SELECT * FROM documentation_sources")
+
+# Good - transaction with automatic rollback on errors
+success = await execute_transaction([
+    ("INSERT INTO documentation_sources (name, url) VALUES (%s, %s)", 
+     ("Python Docs", "https://docs.python.org")),
+    ("UPDATE documentation_sources SET status = %s WHERE id = %s",
+     ("active", 1))
+])
+
+# Avoid - manual connection management
+# Problematic if connections aren't properly closed or errors aren't handled
+conn = await get_db_connection()
+cursor = conn.cursor()
+await cursor.execute("SELECT * FROM documentation_sources")
+# ...
 ```
 
-### Query Optimization
+### 2. Error Handling
 
-1. **Use Parameterized Queries**: Prevents SQL injection and improves query plan caching
-2. **Limit Result Sizes**: Always use LIMIT in queries that could return large result sets
-3. **Index Key Columns**: Create appropriate indexes for frequently queried columns
-4. **Optimize Vector Indexes**: Adjust IVF list count based on your data size
-
-### Vector Operation Efficiency
-
-1. **Batch Embedding Generation**: Generate embeddings in batches rather than individually
-2. **Vector Dimension Considerations**: Higher dimensions provide more precision but consume more space
-3. **Similarity Metrics**: Choose appropriate distance metrics (cosine, L2, inner product) for your use case
-4. **Approximate vs. Exact Search**: Use approximate search for large datasets, exact for smaller ones
-
-### Working with psycopg3
-
-If using the newer psycopg3 driver:
+Implement proper error handling for database operations:
 
 ```python
-import psycopg
-from psycopg.rows import dict_row
-
-async def async_query():
-    # Connect asynchronously
-    async with await psycopg.AsyncConnection.connect(
-        conninfo=get_connection_string()
-    ) as aconn:
-        # Use dictionary cursor
-        async with aconn.cursor(row_factory=dict_row) as acur:
-            await acur.execute(
-                "SELECT * FROM site_pages WHERE id = %s",
-                (page_id,)
-            )
-            result = await acur.fetchone()
-            return result
+try:
+    result = await execute_query(
+        "INSERT INTO documentation_sources (name, url) VALUES (%s, %s) RETURNING id",
+        ("Python Documentation", "https://docs.python.org")
+    )
+    source_id = result[0]["id"]
+except Exception as e:
+    logger.structured_error(
+        "Failed to add documentation source",
+        error=str(e),
+        source="Python Documentation"
+    )
+    # Take appropriate action based on error
 ```
 
-### Error Handling
+### 3. Performance Optimization
 
-1. **Specific Exceptions**: Catch specific psycopg2/psycopg3 exceptions
-2. **Retry Logic**: Implement retries for transient errors
-3. **Connection Verification**: Check connection validity before use
-4. **Logging**: Log database errors with appropriate context
+Optimize database queries for performance:
 
 ```python
-from psycopg2 import errors
+# Good - specific columns, indexed lookup
+await execute_query(
+    "SELECT id, title, summary FROM site_pages WHERE source_id = %s",
+    (source_id,)
+)
 
-try:
-    # Database operation
-    result = add_site_page(...)
-except errors.UniqueViolation:
-    # Handle duplicate entry
-    logger.warning(f"Duplicate entry for URL: {url}")
-except errors.OperationalError as e:
-    # Handle operational issues
-    logger.error(f"Database operational error: {e}")
-    # Attempt reconnection
-    reinitialize_connection_pool()
-except Exception as e:
-    # Log unexpected errors
-    logger.exception(f"Unexpected database error: {e}")
-    raise
+# Good - batched operations for better performance
+page_data = [(url, chunk, title, summary, content, metadata, embedding) 
+             for url, chunk, title, summary, content, metadata, embedding in pages]
+await execute_batch_insert(
+    "INSERT INTO site_pages (url, chunk_number, title, summary, content, metadata, embedding) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+    page_data
+)
+
+# Avoid - retrieving unnecessary data
+# await execute_query("SELECT * FROM site_pages")
+```
+
+### 4. Schema Evolution
+
+When updating the database schema:
+
+```python
+# Version your schema changes
+async def upgrade_schema_to_v2():
+    # 1. Add new columns with default values (non-disruptive)
+    await execute_query("""
+    ALTER TABLE site_pages 
+    ADD COLUMN IF NOT EXISTS raw_content TEXT,
+    ADD COLUMN IF NOT EXISTS text_embedding VECTOR(1536);
+    """)
+    
+    # 2. Create new indexes
+    await execute_query("""
+    CREATE INDEX IF NOT EXISTS idx_site_pages_text_embedding 
+    ON site_pages USING hnsw (text_embedding vector_cosine_ops);
+    """)
+    
+    # 3. Record schema version
+    await execute_query("""
+    INSERT INTO schema_versions (version, applied_at, description)
+    VALUES ('2.0', CURRENT_TIMESTAMP, 'Added raw_content and text_embedding')
+    """)
+```
+
+### 5. Security Considerations
+
+Always use parameterized queries to prevent SQL injection:
+
+```python
+# Good - parameterized query
+source_id = await execute_query(
+    "SELECT id FROM documentation_sources WHERE name = %s",
+    (source_name,)
+)
+
+# Avoid - string concatenation (vulnerable to SQL injection)
+# source_id = await execute_query(
+#     f"SELECT id FROM documentation_sources WHERE name = '{source_name}'")
 ``` 

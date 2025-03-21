@@ -1,355 +1,505 @@
-# Operations Guide: Monitoring System
+# Operations Guide: Monitoring Component
 
-This guide provides operational guidance for system administrators and operators who need to interpret monitoring data, troubleshoot issues, and maintain the system.
+This guide provides practical instructions for configuring, operating, and maintaining the monitoring component of the Agentic RAG system.
 
 ## Table of Contents
 
-1. [Dashboard Overview](#dashboard-overview)
-2. [Interpreting Metrics](#interpreting-metrics)
-3. [Troubleshooting Common Issues](#troubleshooting-common-issues)
-4. [Maintenance Tasks](#maintenance-tasks)
-5. [Performance Optimization](#performance-optimization)
-6. [Reference Tables](#reference-tables)
-
-## Dashboard Overview
-
-The monitoring dashboard is accessible through the Streamlit UI and consists of several tabs:
-
-### Crawl Status Tab
-
-Displays the current state and progress of active crawl operations, including:
-- Source name and ID
-- Start time and duration
-- Pages processed, succeeded, and failed
-- Success rate
-- Error statistics by category and type
-- Historical success rate trends
-
-Use this tab to:
-- Monitor ongoing crawls in real-time
-- Identify problematic content sources
-- Track overall operation progress
-- Analyze error patterns
-
-### Tasks Tab
-
-Shows active and failed tasks in the system:
-- Total task counts (pending, running, succeeded, failed)
-- Average task duration
-- Detailed task listings with state information
-- Task distribution by type
-
-Use this tab to:
-- Identify stuck or long-running tasks
-- Diagnose task failure reasons
-- Monitor task throughput and concurrency
-- Track resource utilization patterns
-
-### System Tab
-
-Displays system resource metrics:
-- CPU usage
-- Memory consumption
-- Thread count
-- System memory utilization
-- Historical resource usage trends
-
-Use this tab to:
-- Identify resource bottlenecks
-- Monitor for memory leaks
-- Track performance degradation over time
-- Plan capacity requirements
-
-### Database Tab
-
-Shows database connection and query statistics:
-- Connection pool utilization
-- Transaction counts and states
-- Query performance metrics
-- Error rates
-
-Use this tab to:
-- Identify database bottlenecks
-- Monitor connection pool health
-- Track slow queries
-- Diagnose database-related errors
-
-### API Tab
-
-Displays API usage and rate limit information:
-- Call counts by endpoint
-- Success and failure rates
-- Rate limit utilization
-- Response time metrics
-
-Use this tab to:
-- Monitor API usage patterns
-- Track rate limit consumption
-- Identify slow or failing API endpoints
-- Optimize API usage
+1. [System Overview](#system-overview)
+2. [Configuration](#configuration)
+3. [Core Operations](#core-operations)
+4. [Dashboard Setup](#dashboard-setup)
+5. [Alerting System](#alerting-system)
+6. [Troubleshooting](#troubleshooting)
+7. [FAQs](#faqs)
+
+## System Overview
+
+The monitoring component provides comprehensive observability for the entire Agentic RAG application with the following primary responsibilities:
+
+- **Application Logging**: Structured, searchable logs of system activities
+- **Performance Metrics**: Collection and analysis of key performance indicators
+- **System Health Monitoring**: Proactive monitoring of component health
+- **Dashboard Visualization**: Real-time and historical data visualization
+- **Alert Management**: Notification of critical events requiring attention
+
+The monitoring system uses a modular architecture that can be configured for different deployment environments from development to production.
+
+## Configuration
+
+### Environment Variables
+
+The monitoring system can be configured through environment variables:
+
+```bash
+# Logging Configuration
+LOG_LEVEL=INFO                    # Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+LOG_FORMAT=JSON                   # Log format (TEXT, JSON)
+LOG_OUTPUT=FILE                   # Output destination (CONSOLE, FILE, BOTH)
+LOG_FILE_PATH=./logs/app.log      # Path for log files
+LOG_ROTATION=DAILY                # Log rotation period (HOURLY, DAILY, WEEKLY)
+LOG_RETENTION_DAYS=30             # Number of days to keep logs
+
+# Metrics Configuration
+METRICS_COLLECTION_ENABLED=true   # Enable metrics collection
+METRICS_STORE=MEMORY              # Metrics storage (MEMORY, POSTGRES, PROMETHEUS)
+METRICS_RETENTION_HOURS=72        # Hours to keep metrics in memory store
+METRICS_SAMPLE_RATE=1.0           # Sampling rate for high-volume metrics (0.0-1.0)
+
+# Dashboard Configuration
+DASHBOARD_AUTO_REFRESH_SECONDS=30 # Auto-refresh interval for dashboards
+DASHBOARD_THEME=LIGHT             # Dashboard theme (LIGHT, DARK)
+DASHBOARD_DEFAULT_TIMESPAN=24h    # Default timespan for dashboard charts
+
+# Alerting Configuration
+ALERTS_ENABLED=true               # Enable alerting system
+ALERT_CHANNELS=EMAIL,SLACK        # Alert channels to use
+EMAIL_RECIPIENTS=admin@example.com,devops@example.com
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
+ALERT_COOLDOWN_MINUTES=15         # Minimum time between duplicate alerts
+```
+
+### Configuration File
+
+For more advanced configuration, you can use a YAML configuration file:
+
+```yaml
+# monitoring_config.yaml
+logging:
+  level: INFO
+  format: JSON
+  output: FILE
+  file_path: ./logs/app.log
+  rotation: DAILY
+  retention_days: 30
+  
+metrics:
+  enabled: true
+  store: MEMORY
+  retention_hours: 72
+  sample_rate: 1.0
+  
+dashboard:
+  auto_refresh_seconds: 30
+  theme: LIGHT
+  default_timespan: 24h
+  
+alerting:
+  enabled: true
+  channels:
+    - type: EMAIL
+      recipients:
+        - admin@example.com
+        - devops@example.com
+      min_level: ERROR
+    - type: SLACK
+      webhook_url: https://hooks.slack.com/services/XXX/YYY/ZZZ
+      min_level: WARNING
+  cooldown_minutes: 15
+```
 
-### Resume Tab
+Load the configuration file by setting the `MONITORING_CONFIG_PATH` environment variable:
 
-Provides options for resuming interrupted crawls:
-- Source selection dropdown
-- Statistics on already processed content
-- Configuration management options
+```bash
+export MONITORING_CONFIG_PATH=./monitoring_config.yaml
+```
 
-Use this tab to:
-- Resume interrupted crawls
-- Save and manage crawl configurations
-- Review source statistics
+## Core Operations
 
-## Interpreting Metrics
+### Managing the Logging System
 
-### Success Rate
+#### Viewing Logs
 
-The success rate metric indicates the percentage of pages that were successfully processed:
+The system logs can be viewed in several ways:
 
-| Success Rate | Interpretation | Action |
-|--------------|----------------|--------|
-| 95-100% | Excellent | Normal operation |
-| 85-95% | Good | Review error logs |
-| 70-85% | Concerning | Investigate common failure patterns |
-| <70% | Critical | Immediate investigation needed |
+1. **Console Output**: When configured to output to console
+2. **Log Files**: When configured to write to files
+3. **Log Viewer UI**: Through the Streamlit admin interface
 
-A sudden drop in success rate typically indicates:
-- Change in site structure
-- API rate limiting
-- System resource constraints
-- Network connectivity issues
+To view logs via the command line:
 
-### Error Categories Distribution
+```bash
+# View the latest logs
+tail -f ./logs/app.log
 
-The error categories pie chart shows the distribution of errors by type:
+# Filter logs by level
+grep '"level":"ERROR"' ./logs/app.log
 
-| Category Dominance | Likely Issue |
-|--------------------|--------------|
-| Content Processing | Site structure changes or parsing issues |
-| Connection | Network issues or site availability |
-| API Rate Limit | Quota exceeded or throttling |
-| Embedding | Token limits or model issues |
-| Database | DB connectivity or query problems |
-| Task Scheduling | Concurrency or resource limits |
+# Filter logs by component
+grep '"component":"database"' ./logs/app.log
 
-A healthy system typically shows a mixture of error types with no single category dominating unless there is a specific issue affecting all operations.
+# Search for specific events
+grep '"message":"User query processed"' ./logs/app.log
+```
 
-### Resource Utilization
+#### Log Rotation and Cleanup
 
-Monitor these resource metrics to ensure system health:
+Log rotation is handled automatically based on configuration. To manually rotate logs:
 
-| Metric | Warning Threshold | Critical Threshold | Possible Causes |
-|--------|-------------------|-------------------|----------------|
-| CPU Usage | >70% sustained | >90% sustained | Too many concurrent tasks, inefficient processing |
-| Memory Usage | Steady increase | >80% of system memory | Memory leaks, large document processing |
-| Active Tasks | >80% of max config | At max configuration | Queue backup, slow processing |
-| Thread Count | Steady increase | >200 threads | Thread leaks, too many concurrent tasks |
+```bash
+# Rotate logs
+python -m src.monitoring.commands rotate_logs
 
-### API Rate Limits
+# Clean up old logs
+python -m src.monitoring.commands cleanup_logs --days 30
+```
 
-The rate limit utilization provides insight into API usage:
+### Managing Metrics Collection
 
-| Utilization | Interpretation | Action |
-|-------------|----------------|--------|
-| <50% | Healthy | Normal operation |
-| 50-80% | Moderate | Consider rate adjustments |
-| >80% | High | Implement rate limiting or backoff |
-| 100% | Limit reached | Pause operations, increase backoff |
+#### Viewing Current Metrics
 
-### Database Connection Pool
+View current metrics through the Streamlit admin interface or via the command line:
 
-The connection pool metrics help identify database bottlenecks:
+```bash
+# Show all current metrics
+python -m src.monitoring.commands show_metrics
 
-| Metric | Warning Signs | Action |
-|--------|--------------|--------|
-| Active/Max Ratio | >80% | Increase pool size or optimize queries |
-| Wait Count | Any non-zero value | Increase pool size or reduce query volume |
-| Idle Connections | 0 for extended periods | Check for connection leaks |
+# Show specific metrics
+python -m src.monitoring.commands show_metrics --metric http_requests_total
 
-## Troubleshooting Common Issues
+# Show metrics for a specific component
+python -m src.monitoring.commands show_metrics --component database
+```
 
-### High Failure Rate
+#### Resetting Metrics
 
-If you observe a high failure rate:
+To reset metrics:
 
-1. **Check Error Categories**:
-   - If dominated by Content Processing: Review sample pages for structure changes
-   - If dominated by Connection: Check network and target site availability
-   - If dominated by API Rate Limit: Adjust concurrency settings
+```bash
+# Reset all metrics
+python -m src.monitoring.commands reset_metrics
 
-2. **Review Failed URLs**:
-   - Look for patterns in failed URLs (specific sections, formats, sizes)
-   - Try manually accessing a sample of failed URLs to verify availability
+# Reset specific metrics
+python -m src.monitoring.commands reset_metrics --metric rag_processing_time_ms
+```
 
-3. **Check Resource Utilization**:
-   - Verify memory and CPU aren't constraining the system
-   - Ensure database connection pool isn't exhausted
+### Running System Diagnostics
 
-### System Slowdown
+To check the health of the system:
 
-If the system becomes progressively slower:
+```bash
+# Run full system diagnostics
+python -m src.monitoring.commands run_diagnostics
 
-1. **Check Memory Usage Trend**:
-   - Steadily increasing memory usage indicates a potential memory leak
-   - Look for objects not being properly garbage collected
+# Check specific component health
+python -m src.monitoring.commands check_health --component database
 
-2. **Monitor Task Duration**:
-   - Increasing average task duration indicates processing inefficiency
-   - Check for external dependencies slowing down
+# Run performance test
+python -m src.monitoring.commands run_performance_test --test_type vector_search
+```
 
-3. **Database Performance**:
-   - Rising query times might indicate index problems or database load
-   - Check for slow queries and optimize as needed
+### Programmatic Access to Monitoring
 
-### "Cannot Schedule New Futures" Errors
+You can also access monitoring functionality programmatically:
 
-This indicates issues with the task scheduling system:
+```python
+from src.monitoring.logger import get_logger
+from src.monitoring.metrics import MetricsCollector
+from src.monitoring.diagnostics import check_system_health
 
-1. **Check Active Tasks**:
-   - If at maximum capacity, increase max_concurrent_tasks setting
-   - Look for stuck tasks that aren't completing
+# Get a logger instance
+logger = get_logger("my_component")
+logger.info("This is an informational message", extra_data="Some value")
 
-2. **Verify Shutdown Flags**:
-   - Ensure no premature shutdown requests are active
-   - Check for error propagation from child tasks to parent tasks
+# Create a metrics collector
+metrics = MetricsCollector()
+metrics.increment_counter("operation_count")
+processing_time = metrics.stop_timer("operation_timer")
 
-3. **Resource Constraints**:
-   - Verify system has sufficient resources to schedule new tasks
-   - Check for thread pool exhaustion
+# Check system health
+health_status = await check_system_health()
+```
 
-### API Rate Limiting
+## Dashboard Setup
 
-When encountering API rate limit errors:
+### Available Dashboards
 
-1. **Adjust Concurrency**:
-   - Reduce max_concurrent_api_calls setting
-   - Implement progressive backoff strategy
+The system provides several pre-built dashboards:
 
-2. **Monitor Usage Patterns**:
-   - Check for usage spikes or unexpected increases
-   - Verify rate limits align with account tier
+1. **System Overview**: High-level metrics for all components
+2. **API Performance**: API request rates, latencies, and error rates
+3. **Database Performance**: Query performance, connection pool stats
+4. **RAG Performance**: Query processing times, context retrieval metrics
+5. **Crawler Performance**: Crawling rates, processing times, error rates
+6. **Error Analysis**: Detailed breakdown of system errors
 
-3. **Optimize Usage**:
-   - Consider batching smaller requests
-   - Implement caching for repetitive calls
+### Generating Dashboards
 
-## Maintenance Tasks
+Generate dashboards through the Streamlit admin interface or via the command line:
 
-### Regular Maintenance
+```bash
+# Generate all dashboards
+python -m src.monitoring.commands generate_dashboards --output_dir ./dashboards
 
-Perform these tasks regularly to maintain system health:
+# Generate specific dashboard
+python -m src.monitoring.commands generate_dashboard --type rag_performance --output ./dashboards/rag.html
 
-1. **Log Rotation**:
-   - Implement log rotation to prevent disk space issues
-   - Archive old logs for historical analysis
+# Generate dashboard with custom timespan
+python -m src.monitoring.commands generate_dashboard --type system_overview --timespan 48h --output ./dashboards/system.html
+```
 
-2. **Database Maintenance**:
-   - Run VACUUM and ANALYZE on PostgreSQL tables
-   - Verify index health and rebuild if necessary
+### Customizing Dashboards
 
-3. **Configuration Backup**:
-   - Backup crawl configurations regularly
-   - Document custom settings and their rationale
+You can customize dashboards by creating configuration files:
 
-### Health Checks
+```yaml
+# dashboard_config.yaml
+title: "Custom RAG Performance Dashboard"
+refresh_rate: 60
+layout:
+  - name: "Query Processing Time"
+    type: "time_series"
+    metric: "rag_processing_time_ms"
+    aggregation: "avg"
+    height: 300
+    width: 12
+  - name: "Context Count Distribution"
+    type: "bar"
+    metric: "rag_context_count"
+    group_by: "query_type"
+    height: 300
+    width: 6
+  - name: "Success Rate"
+    type: "gauge"
+    metric: "rag_processing.success_rate"
+    height: 300
+    width: 6
+```
 
-Implement these health checks to ensure system stability:
+Apply the custom configuration:
 
-1. **Daily Checks**:
-   - Review error rate trends for abnormalities
-   - Verify resource utilization is within expected ranges
-   - Check for failed tasks that haven't been addressed
+```bash
+python -m src.monitoring.commands generate_dashboard --config ./dashboard_config.yaml --output ./dashboards/custom.html
+```
 
-2. **Weekly Checks**:
-   - Analyze error patterns for systematic issues
-   - Review performance metrics for degradation
-   - Verify database size and growth rate
+## Alerting System
 
-3. **Monthly Checks**:
-   - Perform database optimization tasks
-   - Clean up old monitoring data
-   - Review and adjust concurrency settings based on performance
+### Configuring Alert Channels
 
-## Performance Optimization
+#### Email Alerts
 
-### Optimizing Crawl Performance
+Configure email alerts by setting up the SMTP configuration in `monitoring_config.yaml`:
 
-To improve crawl performance:
+```yaml
+alerting:
+  channels:
+    - type: EMAIL
+      recipients:
+        - admin@example.com
+        - devops@example.com
+      min_level: ERROR
+      smtp:
+        server: smtp.gmail.com
+        port: 587
+        username: alerts@example.com
+        password: your_app_password
+        use_tls: true
+```
 
-1. **Concurrent Requests**:
-   - Adjust max_concurrent_requests based on target site capacity
-   - Start low (3-5) and increase gradually while monitoring performance
+#### Slack Alerts
 
-2. **Batch Sizes**:
-   - Optimize embedding batch size for best throughput (typically 5-10)
-   - Adjust LLM batch size based on observed performance (typically 2-5)
+Configure Slack alerts by creating a Slack app with webhook URL:
 
-3. **URL Filtering**:
-   - Use more specific URL patterns to focus on relevant content
-   - Exclude sections known to contain low-value content
+1. Go to https://api.slack.com/apps
+2. Create a new app and enable "Incoming Webhooks"
+3. Add the webhook URL to your configuration:
 
-### Resource Allocation
+```yaml
+alerting:
+  channels:
+    - type: SLACK
+      webhook_url: https://hooks.slack.com/services/XXX/YYY/ZZZ
+      min_level: WARNING
+      channel: "#monitoring-alerts"
+```
 
-Optimize resource allocation for better performance:
+#### PagerDuty Integration
 
-1. **Memory**:
-   - Allocate minimum 4GB RAM for standard operations
-   - For large sites, consider 8-16GB RAM
+Configure PagerDuty integration:
 
-2. **CPU**:
-   - Multi-core systems perform better with higher concurrency
-   - Ensure at least 2 cores for standard operations
+```yaml
+alerting:
+  channels:
+    - type: PAGERDUTY
+      service_key: your_pagerduty_service_key
+      min_level: CRITICAL
+```
 
-3. **Network**:
-   - Stable internet connection with at least 10Mbps bandwidth
-   - Low-latency connections improve API performance
+### Managing Alert Rules
 
-### API Usage Optimization
+Alert rules define when alerts should be triggered. Configure them in `monitoring_config.yaml`:
 
-Optimize API calls for cost and performance:
+```yaml
+alerting:
+  rules:
+    - name: "High Error Rate"
+      condition: "error_rate > 0.05"
+      duration: "5m"
+      level: WARNING
+      message: "Error rate exceeded 5% threshold"
+      
+    - name: "API Slowdown"
+      condition: "api_response_time_p95 > 1000"
+      duration: "10m"
+      level: WARNING
+      message: "API response time is abnormally high"
+      
+    - name: "Database Connection Issues"
+      condition: "db_connection_failures > 5"
+      duration: "5m"
+      level: ERROR
+      message: "Multiple database connection failures detected"
+      
+    - name: "OpenAI API Rate Limit"
+      condition: "openai_rate_limit_errors > 0"
+      duration: "1m"
+      level: WARNING
+      message: "OpenAI API rate limit reached"
+```
 
-1. **Embedding Models**:
-   - Use ada-002 for standard operations (good balance of cost/performance)
-   - Consider text-embedding-3-small for more efficiency
+### Testing Alerts
 
-2. **LLM Models**:
-   - Use smaller models (gpt-3.5-turbo) for routine summaries
-   - Reserve larger models for complex content analysis
+Test your alert configuration:
 
-3. **Batching Strategy**:
-   - Batch embeddings to maximize throughput
-   - Consider text chunking strategy to optimize token usage
+```bash
+# Test all alert channels
+python -m src.monitoring.commands test_alerts
 
-## Reference Tables
+# Test specific channel
+python -m src.monitoring.commands test_alert --channel slack
 
-### Error Category Reference
+# Send test alert
+python -m src.monitoring.commands send_alert --title "Test Alert" --message "This is a test alert" --level WARNING
+```
 
-| Error Category | Typical Causes | Resolution Strategies |
-|----------------|----------------|----------------------|
-| CONTENT_PROCESSING | HTML parsing failures, empty content, chunking issues | Review target site structure, adjust parsing logic, check content length thresholds |
-| CONNECTION | Network timeouts, DNS failures, site unavailability | Check network connectivity, verify site availability, implement retry logic |
-| API_RATE_LIMIT | API quota exceeded, throttling | Reduce concurrency, implement backoff, increase quota |
-| EMBEDDING | Token limits exceeded, model errors | Optimize chunking, reduce input size, check model status |
-| DATABASE | Query failures, connection issues | Verify database connectivity, optimize queries, check indexes |
-| TASK_SCHEDULING | Thread pool exhaustion, future cancellation | Adjust concurrency settings, implement recovery logic |
+### Alert Silencing and Maintenance Mode
 
-### Key Metrics Reference
+During maintenance, you may want to silence alerts:
 
-| Metric | Normal Range | Description | Location |
-|--------|--------------|-------------|----------|
-| Success Rate | >90% | Percentage of successfully processed pages | Crawl Status Tab |
-| Memory Usage | Stable, <70% | Process memory consumption | System Tab |
-| API Rate Limit Utilization | <80% | Percentage of API rate limit consumed | API Tab |
-| Active Tasks | Varies by config | Number of currently executing tasks | Tasks Tab |
-| DB Connection Utilization | <80% | Percentage of connection pool in use | Database Tab |
+```bash
+# Enter maintenance mode (silence all alerts)
+python -m src.monitoring.commands maintenance_mode --enable --duration 60
 
-### Configuration Reference
+# Silence specific alert rule
+python -m src.monitoring.commands silence_alert --rule "High Error Rate" --duration 120
 
-| Setting | Typical Value | Description | Impact |
-|---------|---------------|-------------|--------|
-| max_concurrent_requests | 3-10 | Maximum parallel web requests | Higher values increase crawl speed but may overwhelm target sites |
-| max_concurrent_api_calls | 2-5 | Maximum parallel API calls | Higher values increase processing speed but consume API limits faster |
-| chunk_size | 1000-5000 | Content chunk size in characters | Larger chunks reduce total chunks but may exceed model limits |
-| retry_attempts | 3-6 | Number of retry attempts | Higher values improve reliability but extend processing time |
-| min_backoff | 1-5 | Minimum backoff time in seconds | Higher values reduce pressure on rate-limited resources |
-| max_backoff | 30-120 | Maximum backoff time in seconds | Higher values provide more breathing room during heavy rate limiting | 
+# Exit maintenance mode
+python -m src.monitoring.commands maintenance_mode --disable
+```
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+| Issue | Symptoms | Possible Causes | Solutions |
+|-------|----------|----------------|-----------|
+| **Log File Permissions** | Logger fails to write to log file | Incorrect file permissions | `chmod 755 ./logs` and `chmod 644 ./logs/*.log` |
+| **Metrics Not Updating** | Dashboard shows stale data | Metrics collection disabled or not functioning | Check `METRICS_COLLECTION_ENABLED` setting, restart the application |
+| **Missing Alerts** | Alerts not being received | Incorrect alert channel configuration | Test alert channels with `test_alerts` command |
+| **High CPU Usage** | System performance degradation | Excessive logging or metrics collection | Increase sampling rate, reduce logging verbosity |
+| **Dashboard Generation Failure** | Dashboard not generated | Missing metrics data | Ensure metrics collection is enabled and functioning |
+
+### Diagnostic Tools
+
+#### Log Inspection
+
+Check logs for monitoring system issues:
+
+```bash
+# Check monitoring-specific logs
+grep '"component":"monitoring"' ./logs/app.log
+```
+
+#### Checking Monitoring System Health
+
+The monitoring system can monitor itself:
+
+```bash
+# Check monitoring system health
+python -m src.monitoring.commands check_monitoring_health
+```
+
+#### Memory Usage Analysis
+
+If the monitoring system is consuming too much memory:
+
+```bash
+# Analyze monitoring system memory usage
+python -m src.monitoring.commands analyze_memory_usage
+```
+
+### Recovering from Failures
+
+If the monitoring system fails:
+
+1. Check the logs for error messages
+2. Verify configuration values
+3. Restart the monitoring services:
+
+```bash
+python -m src.monitoring.commands restart_monitoring
+```
+
+If data is corrupted:
+
+```bash
+# Reset metrics store
+python -m src.monitoring.commands reset_metrics_store
+
+# Restore from backup (if available)
+python -m src.monitoring.commands restore_backup --file ./backups/metrics_2023-04-15.bak
+```
+
+## FAQs
+
+### General Questions
+
+**Q: How much disk space do logs consume?**  
+A: With default settings (INFO level, daily rotation, 30-day retention), logs consume approximately 100-200MB per day for moderate usage. This can be adjusted using the `LOG_LEVEL` and `LOG_RETENTION_DAYS` settings.
+
+**Q: Does the monitoring system affect application performance?**  
+A: The monitoring system is designed to have minimal impact on performance. With default settings, the overhead is typically less than 5%. For high-throughput scenarios, you can adjust the sampling rate using the `METRICS_SAMPLE_RATE` setting.
+
+**Q: Can I integrate with external monitoring tools?**  
+A: Yes, the monitoring system supports exporting metrics to Prometheus and logs to standard formats that can be ingested by tools like ELK (Elasticsearch, Logstash, Kibana) or Splunk.
+
+### Technical Questions
+
+**Q: How can I add monitoring to a new component?**  
+A: Import the logger and metrics collector in your component:
+
+```python
+from src.monitoring.logger import get_logger
+from src.monitoring.metrics import MetricsCollector
+
+# Initialize logger and metrics
+logger = get_logger("my_new_component")
+metrics = MetricsCollector()
+
+# Use them in your code
+logger.info("Component initialized")
+metrics.increment_counter("component_operations")
+```
+
+**Q: How do I create a custom dashboard for my component?**  
+A: Define a custom dashboard configuration YAML file and use the `generate_dashboard` command with your configuration.
+
+**Q: How can I set up alerts for a new metric?**  
+A: Add a new rule to the `alerting.rules` section in your `monitoring_config.yaml` file that references your metric.
+
+**Q: What's the best way to handle high-volume logs?**  
+A: For high-volume logs, consider:
+1. Increasing the `LOG_LEVEL` to reduce verbosity
+2. Using `METRICS_SAMPLE_RATE` to sample metrics
+3. Configuring external log shipping to a dedicated logging system
+4. Implementing log aggregation to combine similar log entries
+
+**Q: How can I monitor the resource usage of the application?**  
+A: The monitoring system includes resource usage metrics. View them in the System Overview dashboard or programmatically:
+
+```python
+from src.monitoring.diagnostics import get_resource_usage
+
+# Get current resource usage
+resources = get_resource_usage()
+print(f"CPU: {resources['cpu_percent']}%, Memory: {resources['memory_percent']}%")
+``` 

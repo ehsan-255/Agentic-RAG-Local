@@ -32,12 +32,16 @@ Configure the crawler through these environment variables:
 
 ```
 # Crawler Configuration
-DEFAULT_CHUNK_SIZE=5000            # Size of text chunks
+DEFAULT_CHUNK_SIZE=5000            # Size of text chunks for character-based chunking
+DEFAULT_CHUNK_WORDS=1000           # Number of words per chunk for word-based chunking
+DEFAULT_OVERLAP_WORDS=100          # Word overlap between chunks
+USE_WORD_BASED_CHUNKING=true       # Use word-based instead of character-based chunking
 DEFAULT_MAX_CONCURRENT_CRAWLS=5    # Maximum concurrent HTTP requests
 DEFAULT_MAX_CONCURRENT_API_CALLS=3 # Maximum concurrent OpenAI API calls
 DEFAULT_RETRY_ATTEMPTS=3           # Number of retry attempts for failed requests
 DEFAULT_MIN_BACKOFF=1              # Minimum backoff time in seconds
 DEFAULT_MAX_BACKOFF=60             # Maximum backoff time in seconds
+STORE_RAW_HTML=true                # Whether to store original HTML content
 
 # OpenAI Configuration
 OPENAI_API_KEY=your_key_here       # OpenAI API key
@@ -49,376 +53,468 @@ EMBEDDING_MODEL=text-embedding-3-small  # Model for generating embeddings
 
 The `CrawlConfig` object controls crawling behavior:
 
-| Parameter | Description | Default | Recommended Range |
-|-----------|-------------|---------|------------------|
-| chunk_size | Text chunk size in characters | 5000 | 1000-10000 |
-| max_concurrent_requests | Maximum concurrent HTTP requests | 5 | 1-20 |
-| max_concurrent_api_calls | Maximum concurrent OpenAI API calls | 3 | 1-10 |
-| retry_attempts | Number of retry attempts | 3 | 1-5 |
-| url_patterns_include | URL patterns to include | [] | Site-specific |
-| url_patterns_exclude | URL patterns to exclude | [] | Site-specific |
-
-### URL Pattern Configuration
-
-URL patterns control which pages are crawled:
-
 ```python
-# Basic pattern matching
-url_patterns_include = [
-    "/docs/",     # Include all URLs with /docs/ in the path
-    "/guide/",    # Include all URLs with /guide/ in the path
-    "/tutorial/", # Include all URLs with /tutorial/ in the path
-]
+from src.crawling.enhanced_docs_crawler import CrawlConfig
 
-url_patterns_exclude = [
-    "/archive/", # Exclude all URLs with /archive/ in the path
-    "/v1/",      # Exclude all URLs with /v1/ in the path
-    "?lang=",    # Exclude URLs with language query parameters
-]
-
-# Using regex patterns requires custom filter implementation
+config = CrawlConfig(
+    name="Python Documentation",                # Name of the documentation source
+    sitemap_url="https://docs.python.org/3/sitemap.xml",  # Sitemap URL
+    
+    # Content processing options
+    chunk_size=5000,                           # Character-based chunk size
+    use_word_based_chunking=True,              # Use word-based chunking 
+    chunk_words=1000,                          # Words per chunk
+    overlap_words=100,                         # Word overlap between chunks
+    store_raw_html=True,                       # Store original HTML
+    
+    # Crawling behavior
+    max_concurrent_requests=5,                 # Concurrent HTTP requests
+    max_concurrent_api_calls=3,                # Concurrent API calls
+    respect_robots_txt=True,                   # Honor robots.txt
+    
+    # URL filtering
+    url_patterns_include=["/reference/", "/tutorial/"],  # URL patterns to include
+    url_patterns_exclude=["/whatsnew/"],               # URL patterns to exclude
+    
+    # Error handling
+    retry_attempts=3,                          # Number of retry attempts
+    min_backoff=1,                             # Minimum backoff time (seconds)
+    max_backoff=60,                            # Maximum backoff time (seconds)
+    
+    # Performance options
+    incremental=True,                          # Only process new/updated pages
+    check_modified_since=True                  # Check Last-Modified headers
+)
 ```
 
 ## Crawling Operations
 
-### Starting a Crawl
+### Adding a New Documentation Source
 
-To initiate a crawl operation from the Streamlit UI:
+To add a new documentation source through the UI:
 
-1. Navigate to the "Add New Documentation Source" section
-2. Enter the documentation name and sitemap URL
-3. Configure advanced options if needed
+1. Navigate to the "Add Source" tab in the web interface
+2. Enter source details:
+   - **Name**: Descriptive name (e.g., "Python Documentation")
+   - **Sitemap URL**: URL to the sitemap (e.g., "https://docs.python.org/3/sitemap.xml")
+3. Configure advanced options (optional):
+   - **Chunking Strategy**: Word-based or character-based
+   - **Words per Chunk**: For word-based chunking (default: 1000)
+   - **Word Overlap**: Overlap between chunks (default: 100)
+   - **Maximum Concurrent Requests**: Parallelism level (default: 5)
+   - **URL Patterns**: Include/exclude patterns for selective crawling
+   - **Store Raw HTML**: Whether to store original HTML (useful for debugging)
 4. Click "Add and Crawl" to start the crawling process
 
-To programmatically start a crawl:
+### Clearing a Documentation Source
+
+To remove a documentation source:
+
+1. Navigate to the "Manage Sources" tab
+2. Find the source you want to remove
+3. Click "Delete Source"
+4. Confirm deletion in the prompt
+
+This will:
+- Remove the source from the list of available sources
+- Delete all stored content, embeddings, and metadata for that source
+- Free up database space
+
+### Programmatic Control
+
+For programmatic control of the crawler:
 
 ```python
-from src.crawling.enhanced_docs_crawler import crawl_documentation, CrawlConfig
-from openai import AsyncOpenAI
 import asyncio
+from src.crawling.enhanced_docs_crawler import (
+    crawl_documentation, 
+    clear_documentation_source,
+    CrawlConfig
+)
 
-async def start_crawl():
-    # Initialize OpenAI client
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    
-    # Create configuration
+# Add and crawl a documentation source
+async def add_documentation():
     config = CrawlConfig(
-        source_id="python_docs",
-        source_name="Python Documentation",
-        sitemap_url="https://docs.python.org/3/sitemap.xml",
-        chunk_size=5000,
-        max_concurrent_requests=5,
-        max_concurrent_api_calls=3
+        name="FastAPI Documentation",
+        sitemap_url="https://fastapi.tiangolo.com/sitemap.xml",
+        use_word_based_chunking=True,
+        chunk_words=1000,
+        overlap_words=100
     )
     
-    # Start crawling
-    success = await crawl_documentation(openai_client, config)
-    
-    return success
+    result = await crawl_documentation(config)
+    print(f"Crawling completed: {'Success' if result else 'Failed'}")
 
-# Run the crawl
-asyncio.run(start_crawl())
-```
+# Clear a documentation source
+async def clear_documentation():
+    success = await clear_documentation_source("FastAPI Documentation")
+    print(f"Source cleared: {'Success' if success else 'Failed'}")
 
-### Pausing and Resuming
-
-The crawling process can be paused and resumed using the session state:
-
-```python
-from src.utils.enhanced_logging import get_active_session
-from src.crawling.crawl_state import save_crawl_state, load_crawl_state
-
-# Pause a crawl
-session = get_active_session()
-if session:
-    # Save current state
-    save_crawl_state(session.session_id, "paused")
-    session.pause()
-    print("Crawl paused")
-
-# Resume a crawl
-session_id = "previous_session_id"
-state = load_crawl_state(session_id)
-if state and state["status"] == "paused":
-    # Initialize new crawl with previous state
-    config = CrawlConfig(**state["config"])
-    
-    # Resume crawling unprocessed URLs
-    remaining_urls = state["remaining_urls"]
-    success = await crawl_documentation(openai_client, config, initial_urls=remaining_urls)
-```
-
-### Clearing a Source
-
-To remove a documentation source and all its content:
-
-```python
-from src.crawling.enhanced_docs_crawler import clear_documentation_source
-
-# Clear a source completely
-source_id = "python_docs"
-success = await clear_documentation_source(source_id)
-
-if success:
-    print(f"Source {source_id} cleared successfully")
-else:
-    print(f"Failed to clear source {source_id}")
+# Run the operations
+asyncio.run(add_documentation())
+# asyncio.run(clear_documentation())
 ```
 
 ## Monitoring and Control
 
-### Monitoring Crawl Progress
+### Crawling Progress
 
-The Streamlit UI provides real-time monitoring of crawl operations:
+Monitor crawling progress via:
 
-1. Navigate to the "Monitoring" tab
-2. View active crawls, progress, and success rates
-3. Check error statistics and rate limiting information
+1. **Web Interface**: Real-time progress indicators in the UI
+   - Progress bar showing overall completion
+   - Counters for processed/successful/failed pages
+   - Active tasks indicator
 
-To programmatically monitor crawls:
+2. **Logs**: Detailed logging in the logs directory
+   - `logs/crawler_{timestamp}.log`: Crawler-specific logs
+   - `logs/error_{timestamp}.log`: Error logs
 
-```python
-from src.utils.enhanced_logging import get_active_session
-from src.utils.task_monitoring import get_tasks_count, TaskType
+3. **Programmatically**:
+   ```python
+   from src.crawling.crawl_state import get_crawl_stats
+   
+   # Get statistics for a specific crawl session
+   stats = get_crawl_stats(session_id)
+   print(f"Progress: {stats['progress_percentage']}%")
+   print(f"Processed: {stats['processed_urls']}/{stats['total_urls']}")
+   print(f"Success rate: {stats['success_rate']}%")
+   print(f"Errors: {stats['failed_urls']}")
+   ```
 
-# Get status of active crawls
-session = get_active_session()
-if session:
-    # Get progress statistics
-    total = session.total_urls
-    processed = session.processed_urls
-    successful = session.successful_urls
-    failed = session.failed_urls
-    success_rate = session.success_rate
-    
-    # Get active tasks
-    crawling_tasks = get_tasks_count(TaskType.PAGE_CRAWLING)
-    processing_tasks = get_tasks_count(TaskType.PAGE_PROCESSING)
-    
-    # Print status
-    print(f"Crawl progress: {processed}/{total} ({success_rate:.1f}%)")
-    print(f"Success: {successful}, Failed: {failed}")
-    print(f"Active tasks: {crawling_tasks} crawling, {processing_tasks} processing")
-```
+### Controlling Crawling
 
-### Log Analysis
+Control ongoing crawls via:
 
-Check the logs for detailed crawl information:
+1. **Pause/Resume**: Temporarily pause and resume crawling
+   - UI: Click "Pause" in the crawling interface
+   - API: `POST /api/crawl/{source_id}/pause` and `POST /api/crawl/{source_id}/resume`
 
-```bash
-# Display recent crawler logs
-grep "crawler" logs/application.log | tail -100
+2. **Cancel**: Stop crawling completely
+   - UI: Click "Cancel" in the crawling interface
+   - API: `POST /api/crawl/{source_id}/cancel`
+   - Programmatically:
+     ```python
+     from src.crawling.enhanced_docs_crawler import cancel_crawl
+     
+     # Cancel an active crawl
+     await cancel_crawl(source_id)
+     ```
 
-# Check for rate limit issues
-grep "rate_limit" logs/application.log
-
-# Find failed URLs
-grep "ERROR" logs/application.log | grep "URL"
-```
-
-### Cancelling a Crawl
-
-To cancel an ongoing crawl operation:
-
-```python
-from src.utils.task_monitoring import cancel_all_tasks
-from src.utils.enhanced_logging import get_active_session, end_crawl_session
-
-# Cancel all tasks
-cancel_all_tasks()
-
-# End the active session
-session = get_active_session()
-if session:
-    end_crawl_session(session.session_id, "cancelled")
-    print("Crawl cancelled successfully")
-```
+3. **Rate Limiting**: Adjust crawling speed dynamically
+   - UI: Use the "Crawl Speed" slider in the interface
+   - API: `POST /api/crawl/{source_id}/rate-limit?max_requests=3`
 
 ## Performance Optimization
 
-### Concurrency Settings
+### Optimizing Crawl Speed
 
-Optimize crawler performance by adjusting concurrency parameters:
+To optimize crawling performance:
 
-| Scenario | max_concurrent_requests | max_concurrent_api_calls | Notes |
-|----------|-------------------------|--------------------------|-------|
-| Default | 5 | 3 | Balanced performance |
-| Gentle crawling | 2 | 2 | For sensitive sites |
-| Fast crawling | 10 | 5 | For robust sites with no rate limits |
-| API-focused | 5 | 10 | When API is the bottleneck |
-| Network-focused | 10 | 3 | When network is the bottleneck |
+1. **Concurrency Settings**:
+   - For modern websites: `max_concurrent_requests=5-10`
+   - For older/slower websites: `max_concurrent_requests=3-5`
+   - For API calls: `max_concurrent_api_calls=5-10`
 
-### Resource Utilization
+2. **Selective Crawling**:
+   - Use URL patterns to focus on relevant content:
+     ```python
+     config = CrawlConfig(
+         # ... other settings
+         url_patterns_include=["/docs/", "/reference/"],
+         url_patterns_exclude=["/blog/", "/news/"]
+     )
+     ```
 
-Optimize for different environments:
+3. **Content Extraction Strategy**:
+   The system now uses multiple content extraction strategies in sequence:
+   - HTML2Text-based conversion (preserves structure and links)
+   - Content area extraction (targets main content sections)
+   - Fallback raw text extraction
+   
+   This multi-strategy approach ensures better content quality.
 
-1. **Low-resource environment**:
-   ```python
-   config = CrawlConfig(
-       # ... other settings
-       chunk_size=2000,  # Smaller chunks
-       max_concurrent_requests=3,
-       max_concurrent_api_calls=2,
-       batch_size=5  # Smaller batches
-   )
-   ```
+4. **Chunking Strategy**:
+   - For technical documentation: Word-based chunking with 800-1200 words per chunk
+   - For narrative content: Word-based chunking with 500-800 words per chunk
+   - For reference material: Character-based chunking with 4000-6000 characters
 
-2. **High-performance environment**:
-   ```python
-   config = CrawlConfig(
-       # ... other settings
-       chunk_size=8000,  # Larger chunks
-       max_concurrent_requests=15,
-       max_concurrent_api_calls=8,
-       batch_size=50  # Larger batches
-   )
-   ```
+### Resource Considerations
 
-### Chunk Size Optimization
+Be aware of these resource requirements:
 
-Adjust chunk size based on content type:
+1. **Memory Usage**:
+   - Each concurrent crawl task: ~50-100MB
+   - Batch processing: ~200-500MB depending on batch size
+   - Set appropriate limits based on available memory
 
-| Content Type | Recommended Chunk Size | Rationale |
-|--------------|------------------------|-----------|
-| API Documentation | 2000-3000 | Dense, technical content |
-| Tutorials | 4000-6000 | Narrative, contextual content |
-| Reference Guides | 3000-5000 | Structured, topical content |
-| Blog Posts | 5000-8000 | Natural language, conversational |
+2. **API Costs**:
+   - Embedding generation: ~$0.0001 per 1K tokens
+   - Title/summary generation: ~$0.01 per 1K tokens
+   - Estimate: $1-5 per 1000 pages depending on content length
 
-### Rate Limit Management
-
-Configure retry behavior for rate limits:
-
-```python
-# In CrawlConfig:
-retry_attempts=5,         # More retries
-min_backoff=2,            # Start with 2 seconds
-max_backoff=120,          # Maximum 2 minutes wait
-```
+3. **Database Storage**:
+   - Text content: ~2-5KB per chunk
+   - Embeddings: ~6KB per embedding (1536 dimensions)
+   - Raw HTML: ~20-100KB per page
+   - Estimate: ~50-150KB per processed page total
 
 ## Troubleshooting
 
 ### Common Issues
 
-| Problem | Possible Causes | Solution |
-|---------|----------------|----------|
-| Crawl fails to start | Invalid sitemap URL<br>Database connection issues | Validate sitemap URL<br>Check database connectivity |
-| Slow crawling | Too low concurrency<br>Rate limiting<br>Network latency | Increase concurrent requests<br>Adjust backoff settings<br>Check network connection |
-| High error rate | Server rejecting requests<br>Invalid content<br>Parsing errors | Reduce concurrency<br>Check URL patterns<br>Inspect page structure |
-| OpenAI API errors | Rate limits<br>Invalid key<br>Quota exceeded | Implement backoff<br>Check API key<br>Increase quota |
-| Memory issues | Large documents<br>Too many concurrent tasks | Reduce chunk size<br>Limit concurrency<br>Enable content size limits |
+#### Crawling Stops or Slows Down
 
-### Diagnostic Steps
+**Symptoms**: Crawling progress halts or becomes very slow.
 
-For crawling issues:
+**Possible Causes and Solutions**:
 
-1. **Check connectivity**:
-   ```bash
-   # Verify sitemap accessibility
-   curl -I https://example.com/sitemap.xml
-   ```
+1. **Rate Limiting**:
+   - Check logs for `429 Too Many Requests` errors
+   - **Solution**: Reduce `max_concurrent_requests` or add delays:
+     ```python
+     config = CrawlConfig(
+         # ... other settings
+         max_concurrent_requests=3,
+         min_backoff=2,
+         max_backoff=120
+     )
+     ```
 
-2. **Validate URL filtering**:
-   ```python
-   from src.crawling.enhanced_docs_crawler import filter_urls
-   
-   # Test URL filtering
-   test_urls = [
-       "https://example.com/docs/guide.html",
-       "https://example.com/blog/post.html",
-       "https://example.com/docs/api/reference.html"
-   ]
-   
-   filtered = filter_urls(test_urls, config)
-   print(f"Filtered {len(filtered)}/{len(test_urls)} URLs")
-   ```
+2. **Memory Issues**:
+   - Check for `MemoryError` or system becoming sluggish
+   - **Solution**: Reduce batch sizes or concurrency:
+     ```python
+     config = CrawlConfig(
+         # ... other settings
+         max_concurrent_requests=3,
+         max_concurrent_api_calls=2
+     )
+     ```
 
-3. **Test page processing**:
-   ```python
-   import httpx
-   from src.crawling.enhanced_docs_crawler import process_and_store_document
-   
-   # Test page processing
-   async def test_page():
-       url = "https://example.com/docs/page.html"
-       async with httpx.AsyncClient() as client:
-           response = await client.get(url)
-           if response.status_code == 200:
-               result = await process_and_store_document(
-                   url=url,
-                   html_content=response.text,
-                   config=config,
-                   embedding_processor=embedding_processor,
-                   llm_processor=llm_processor
-               )
-               print(f"Processed {result} chunks")
-   ```
+3. **API Limits**:
+   - Check for OpenAI API errors in logs
+   - **Solution**: Implement request throttling:
+     ```python
+     config = CrawlConfig(
+         # ... other settings
+         max_concurrent_api_calls=2,
+         retry_attempts=5,
+         max_backoff=300
+     )
+     ```
 
-### Error Recovery
+#### Content Quality Issues
 
-For recovering from errors:
+**Symptoms**: Missing or poor-quality content in search results.
 
-1. **Restart from failed URLs**:
-   ```python
-   from src.utils.enhanced_logging import get_failed_urls
-   
-   # Get failed URLs from the session
-   session_id = "your_session_id"
-   failed_urls = get_failed_urls(session_id)
-   
-   # Retry failed URLs
-   if failed_urls:
-       print(f"Retrying {len(failed_urls)} failed URLs")
-       await crawl_documentation(openai_client, config, initial_urls=failed_urls)
-   ```
+**Possible Causes and Solutions**:
 
-2. **Reset the crawl state**:
-   ```python
-   from src.crawling.crawl_state import reset_crawl_state
-   
-   # Reset state for a fresh start
-   reset_crawl_state()
-   ```
+1. **Content Extraction Failures**:
+   - Check logs for `ContentProcessingError` entries
+   - **Solution**: Store raw HTML for debugging:
+     ```python
+     config = CrawlConfig(
+         # ... other settings
+         store_raw_html=True
+     )
+     ```
+   - Then examine raw HTML to identify extraction issues
+
+2. **Chunking Problems**:
+   - Content chunks break in awkward places
+   - **Solution**: Switch to word-based chunking:
+     ```python
+     config = CrawlConfig(
+         # ... other settings
+         use_word_based_chunking=True,
+         chunk_words=1000,
+         overlap_words=150  # Increase overlap for better context
+     )
+     ```
+
+3. **URL Filtering Too Strict**:
+   - Important content missing from results
+   - **Solution**: Check and adjust URL patterns:
+     ```python
+     config = CrawlConfig(
+         # ... other settings
+         url_patterns_include=["/docs/", "/guide/", "/reference/"],  # Add more patterns
+         url_patterns_exclude=[]  # Remove restrictive exclusions
+     )
+     ```
+
+### Diagnostic Tools
+
+#### Database Inspection
+
+Use the database diagnostic tool to check stored content:
+
+```bash
+python check_database.py
+```
+
+This will show:
+- Documentation source information
+- Page and chunk counts per source
+- Sample content for verification
+- Issues like missing embeddings or empty content
+
+#### Crawl Logs Analysis
+
+Analyze crawl logs to identify patterns:
+
+```bash
+python -c "
+import re
+from collections import Counter
+with open('logs/crawler_latest.log') as f:
+    errors = re.findall(r'ERROR.*?(\w+Error)', f.read())
+    print(Counter(errors))
+"
+```
+
+This will show the distribution of error types.
+
+#### Content Extraction Testing
+
+Test content extraction on problematic pages:
+
+```python
+import asyncio
+from src.crawling.enhanced_docs_crawler import test_content_extraction
+
+async def test_extraction():
+    url = "https://problem-site.com/difficult-page"
+    results = await test_content_extraction(url)
+    
+    # Show results from each strategy
+    for strategy, content in results.items():
+        print(f"=== {strategy} ===")
+        print(f"Success: {content['success']}")
+        print(f"Content length: {len(content['content']) if content['success'] else 0}")
+        print(f"Sample: {content['content'][:200] if content['success'] else 'N/A'}")
+
+asyncio.run(test_extraction())
+```
 
 ## FAQs
 
 ### General Questions
 
-#### How long does crawling typically take?
-Crawling time depends on the size of the documentation, but as a rough guide:
-- Small documentation (100 pages): 10-15 minutes
-- Medium documentation (500 pages): 30-60 minutes
-- Large documentation (1000+ pages): 2+ hours
+**Q: How long does crawling take?**  
+A: Crawling speed depends on several factors:
+   - Website size (number of pages)
+   - Website response time
+   - Concurrency settings
+   - API rate limits
+   
+   As a rough estimate:
+   - Small site (100 pages): 5-10 minutes
+   - Medium site (1000 pages): 30-60 minutes
+   - Large site (10,000+ pages): Several hours
+   
+   The system now displays estimated completion time in the UI based on current processing speed.
 
-#### Can I crawl multiple sites simultaneously?
-Yes, but be careful about resource usage. Set lower concurrency limits for each crawl to avoid overloading your system or hitting API rate limits.
+**Q: Does the crawler respect robots.txt?**  
+A: Yes, by default the crawler respects robots.txt directives. This can be disabled but is not recommended:
+   ```python
+   config = CrawlConfig(
+       # ... other settings
+       respect_robots_txt=False  # Not recommended
+   )
+   ```
 
-#### What happens if the crawler is interrupted?
-The crawler automatically saves its state periodically. You can resume from the last saved state through the UI or programmatically.
+**Q: How can I crawl sites requiring authentication?**  
+A: For sites requiring authentication, you can use the headers parameter:
+   ```python
+   config = CrawlConfig(
+       # ... other settings
+       headers={
+           "Authorization": "Bearer your_token_here",
+           "Cookie": "session=your_session_cookie"
+       }
+   )
+   ```
 
 ### Technical Questions
 
-#### How are pages chunked?
-The system attempts to preserve semantic boundaries (paragraphs, sections) while splitting content into chunks of approximately the configured chunk size.
+**Q: Which chunking method should I use?**  
+A: The optimal chunking method depends on your content:
+   - **Word-based chunking** (recommended): Better preserves semantic units and provides more consistent chunk sizes
+   - **Character-based chunking**: Useful for very large documents or when exact character counts matter
 
-#### Can I crawl sites without sitemaps?
-Yes, but you'll need to provide a list of URLs manually by implementing a custom crawler. The system primarily works with sitemap-driven crawling.
+**Q: How do I optimize for specific documentation types?**  
+A: Different documentation types benefit from different settings:
 
-#### How do I add support for a new content type?
-Implement a custom processor function for your content type that extracts text, then use the standard chunking and embedding process.
+   - **API Documentation**:
+     ```python
+     config = CrawlConfig(
+         # ... other settings
+         use_word_based_chunking=True,
+         chunk_words=800,
+         overlap_words=100
+     )
+     ```
 
-### Optimization Questions
+   - **Tutorials and Guides**:
+     ```python
+     config = CrawlConfig(
+         # ... other settings
+         use_word_based_chunking=True,
+         chunk_words=1200,
+         overlap_words=150
+     )
+     ```
 
-#### How can I optimize for token usage?
-1. Increase chunk size to reduce the total number of embeddings
-2. Use URL patterns to exclude irrelevant pages
-3. Implement content filtering to remove boilerplate text
+   - **Reference Material**:
+     ```python
+     config = CrawlConfig(
+         # ... other settings
+         use_word_based_chunking=True,
+         chunk_words=600,
+         overlap_words=50
+     )
+     ```
 
-#### What's the optimal concurrency setting?
-Start with moderate settings (5 concurrent requests, 3 API calls) and gradually increase while monitoring performance and error rates.
+**Q: Can I prioritize certain pages during crawling?**  
+A: Yes, you can implement a custom URL prioritization function:
+   ```python
+   def url_prioritizer(urls):
+       # Sort URLs by priority
+       prioritized = []
+       
+       # Give higher priority to index pages
+       for url in urls:
+           priority = 1
+           if url.endswith("index.html") or url.endswith("/"):
+               priority = 3
+           elif "/getting-started/" in url:
+               priority = 2
+           prioritized.append((url, priority))
+       
+       # Sort by priority (highest first)
+       prioritized.sort(key=lambda x: x[1], reverse=True)
+       return [url for url, _ in prioritized]
+   
+   config = CrawlConfig(
+       # ... other settings
+       url_prioritizer=url_prioritizer
+   )
+   ```
 
-#### How can I reduce crawl time?
-1. Increase concurrency settings
-2. Filter URLs more aggressively
-3. Use a more powerful machine for crawling
-4. Split large sites into multiple crawl operations 
+**Q: How can I monitor the quality of extracted content?**  
+A: Enable content quality checking:
+   ```python
+   config = CrawlConfig(
+       # ... other settings
+       validate_content=True,
+       min_content_length=200,  # Minimum characters per chunk
+       store_raw_html=True      # Store HTML for manual inspection
+   )
+   ```
+   
+   You can also review content in the database using:
+   ```bash
+   python check_database.py --sample-content --source-id your_source_id
+   ``` 

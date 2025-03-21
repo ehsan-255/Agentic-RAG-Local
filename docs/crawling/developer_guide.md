@@ -33,9 +33,11 @@ The architecture follows these key principles:
 
 1. **Asynchronous Processing**: Efficient concurrent crawling with controlled parallelism
 2. **Configurable Behavior**: Customizable crawling parameters
-3. **Content Chunking**: Smart text division for optimal RAG performance
-4. **Error Resilience**: Robust error handling and recovery
-5. **State Management**: Tracking crawl progress for resumability
+3. **Multi-strategy Content Extraction**: Multiple approaches to handle different HTML structures
+4. **Word-based Chunking**: Semantic text division with configurable overlap
+5. **Enhanced Error Handling**: Categorized errors with recovery mechanisms
+6. **State Management**: Tracking crawl progress for resumability and monitoring
+7. **Raw HTML Preservation**: Option to store original HTML alongside processed content
 
 ## Key Components
 
@@ -48,463 +50,269 @@ from src.crawling.enhanced_docs_crawler import crawl_documentation, CrawlConfig
 
 # Create a crawl configuration
 config = CrawlConfig(
-    source_id="python_docs",
-    source_name="Python Documentation",
+    name="Python Documentation",
     sitemap_url="https://docs.python.org/3/sitemap.xml",
     chunk_size=5000,
+    # New options
+    use_word_based_chunking=True,
+    chunk_words=1000,
+    overlap_words=100,
+    store_raw_html=True,
     max_concurrent_requests=5,
-    max_concurrent_api_calls=3,
-    url_patterns_include=["/reference/", "/tutorial/"],
-    url_patterns_exclude=["/whatsnew/"]
+    retry_attempts=3
 )
 
-# Start the crawl process
-await crawl_documentation(openai_client, config)
+# Start the crawling process
+result = await crawl_documentation(config)
 ```
 
-### 2. Batch Processor (`src/crawling/batch_processor.py`)
+The enhanced crawler now supports:
+- Multiple sitemap formats (XML, XML.gz, TXT)
+- Concurrent HTTP requests with connection pooling
+- Asynchronous processing with controlled concurrency
+- Word-based chunking with configurable overlap
+- Multiple content extraction strategies
 
-Manages batch processing for embeddings and LLM operations:
+### 2. Crawl State Management (`src/crawling/crawl_state.py`)
+
+New component for managing crawl state and progress:
+
+```python
+from src.crawling.crawl_state import (
+    initialize_crawl_state, 
+    reset_crawl_state,
+    update_crawl_progress,
+    get_crawl_stats
+)
+
+# Initialize crawl state
+session_id = initialize_crawl_state(source_id="python_docs", total_urls=250)
+
+# Update progress
+update_crawl_progress(session_id, processed_urls=10, success=8, failed=2)
+
+# Get statistics
+stats = get_crawl_stats(session_id)
+```
+
+### 3. Batch Processor (`src/crawling/batch_processor.py`)
+
+Handles batched processing of embeddings and LLM tasks:
 
 ```python
 from src.crawling.batch_processor import EmbeddingBatchProcessor, LLMBatchProcessor
 
-# Create batch processors
-embedding_processor = EmbeddingBatchProcessor(
-    openai_client, 
-    batch_size=20,
+# Create a batch processor for embeddings
+processor = EmbeddingBatchProcessor(
+    batch_size=10,
     max_concurrent_requests=3
 )
 
-llm_processor = LLMBatchProcessor(
-    openai_client,
-    model="gpt-4o-mini",
-    max_concurrent_requests=2
-)
-
-# Process embeddings in batches
-embeddings = await embedding_processor.get_embeddings(text_chunks)
-
-# Generate titles and summaries
-titles_summaries = await llm_processor.generate_titles_and_summaries(chunk_data)
-```
-
-### 3. URL and Content Processing
-
-Functions for processing URLs and content:
-
-```python
-from src.crawling.enhanced_docs_crawler import filter_urls, process_and_store_document
-
-# Filter URLs based on patterns
-filtered_urls = filter_urls(
-    urls=all_urls,
-    config=crawl_config
-)
-
-# Process a document
-chunks_stored = await process_and_store_document(
-    url="https://docs.python.org/3/tutorial/index.html",
-    html_content=html_content,
-    config=crawl_config,
-    embedding_processor=embedding_processor,
-    llm_processor=llm_processor
-)
-```
-
-### 4. Sitemap Parsing
-
-Functions for extracting URLs from sitemaps:
-
-```python
-from src.crawling.enhanced_docs_crawler import get_urls_from_sitemap
-
-# Extract URLs from a sitemap
-urls = await get_urls_from_sitemap(
-    sitemap_url="https://docs.python.org/3/sitemap.xml",
-    config=crawl_config
-)
+# Process a batch of texts
+results = await processor.process_batch(texts)
 ```
 
 ## Integration Points
 
-### Adding a New Documentation Source
+### 1. With Database Layer
 
-To add a new documentation source to the system:
+The crawler integrates with the database layer to store processed content:
 
 ```python
-from src.crawling.enhanced_docs_crawler import crawl_documentation, CrawlConfig
-from openai import AsyncOpenAI
+from src.db.async_schema import (
+    add_documentation_source,
+    add_site_page,
+    update_documentation_source
+)
 
-async def add_new_documentation_source(source_name, sitemap_url):
-    # Initialize OpenAI client
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    
-    # Create a unique source ID
-    source_id = f"{source_name.lower().replace(' ', '_')}_{int(time.time())}"
-    
-    # Create configuration
-    config = CrawlConfig(
-        source_id=source_id,
-        source_name=source_name,
-        sitemap_url=sitemap_url,
-        # Additional parameters with defaults
-        chunk_size=5000,
-        max_concurrent_requests=5,
-        max_concurrent_api_calls=3
-    )
-    
-    # Perform the crawl
-    success = await crawl_documentation(openai_client, config)
-    
-    return success, source_id
+# Add a new documentation source
+source_id = await add_documentation_source(name="Python Docs", url="https://docs.python.org")
+
+# Store a processed page
+await add_site_page(
+    url="https://docs.python.org/3/tutorial/index.html",
+    chunk_number=1,
+    title="Python Tutorial",
+    summary="Introduction to Python basics",
+    content="Processed content here...",
+    metadata={"source_id": source_id, "word_count": 500},
+    embedding=embedding_vector,
+    raw_content="<html>Original HTML content</html>",  # New parameter
+    text_embedding=text_embedding_vector  # New parameter for hybrid search
+)
 ```
 
-### Clearing Existing Documentation
+### 2. With UI Layer
 
-To remove a documentation source:
-
-```python
-from src.crawling.enhanced_docs_crawler import clear_documentation_source
-
-# Clear all data for a source
-success = await clear_documentation_source(source_id="python_docs")
-```
-
-### Monitoring Crawl Progress
-
-To monitor the crawling process:
+The crawler integrates with the UI layer for control and monitoring:
 
 ```python
-from src.utils.enhanced_logging import get_active_session
-from src.utils.task_monitoring import get_tasks_by_type, TaskType
+# In streamlit_app.py
+from src.crawling.enhanced_docs_crawler import crawl_documentation
+from src.crawling.crawl_state import get_crawl_stats
 
-# Get the active crawl session
-session = get_active_session()
-if session:
-    # Get progress statistics
-    total_pages = session.total_urls
-    processed_pages = session.processed_urls
-    success_rate = session.success_rate
-    
-    print(f"Progress: {processed_pages}/{total_pages} pages ({success_rate:.2f}% success)")
+# Start crawling in background
+async def start_crawl():
+    config = CrawlConfig(...)
+    result = await crawl_documentation(config)
+    return result
 
-# Get active tasks
-crawl_tasks = get_tasks_by_type(TaskType.PAGE_CRAWLING)
-processing_tasks = get_tasks_by_type(TaskType.PAGE_PROCESSING)
-
-print(f"Active crawl tasks: {len(crawl_tasks)}")
-print(f"Active processing tasks: {len(processing_tasks)}")
+# Display crawling progress
+stats = get_crawl_stats(session_id)
+st.progress(stats["progress_percentage"])
+st.metric("Pages Processed", stats["processed"])
 ```
 
 ## Content Processing
 
-### Text Chunking
+### 1. Multi-Strategy Content Extraction
 
-The system divides document content into manageable chunks for optimal retrieval:
+The enhanced crawler implements three strategies for extracting content:
 
 ```python
-from src.crawling.enhanced_docs_crawler import chunk_text
-
-# Chunk a document
-chunks = chunk_text(
-    text="Long document text...",
-    chunk_size=2000
-)
-
-# Process each chunk
-for i, chunk in enumerate(chunks):
-    print(f"Chunk {i}: {len(chunk)} characters")
+# Strategy 1: HTML2Text-based conversion
+def extract_content_html2text(html):
+    converter = html2text.HTML2Text()
+    converter.ignore_links = False
+    return converter.handle(html)
+    
+# Strategy 2: Content area extraction
+def extract_main_content(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    # Target main content areas
+    for selector in ['main', 'article', '.content', '#content']:
+        content_area = soup.select_one(selector)
+        if content_area:
+            return content_area.get_text()
+    
+# Strategy 3: Fallback raw text extraction
+def extract_raw_text(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    return soup.get_text()
 ```
 
-### HTML Processing
+### 2. Word-Based Chunking
 
-The crawler converts HTML to markdown for better text processing:
-
-```python
-import html2text
-from bs4 import BeautifulSoup
-
-def extract_content(html_content):
-    # Extract title
-    soup = BeautifulSoup(html_content, 'html.parser')
-    title = soup.title.string if soup.title else "Untitled Document"
-    
-    # Convert HTML to text
-    h2t = html2text.HTML2Text()
-    h2t.ignore_links = False
-    h2t.ignore_images = True
-    markdown_content = h2t.handle(html_content)
-    
-    return title, markdown_content
-```
-
-### Metadata Extraction
-
-The system extracts and stores metadata about documents:
+New word-based chunking with configurable overlap:
 
 ```python
-def extract_metadata(url, html_content, source_id):
-    """Extract metadata from the document."""
-    soup = BeautifulSoup(html_content, 'html.parser')
+def chunk_by_words(text, words_per_chunk=1000, overlap_words=100):
+    words = text.split()
+    chunks = []
     
-    # Extract metadata
-    metadata = {
-        "source_id": source_id,
-        "url": url,
-        "title": soup.title.string if soup.title else "Untitled",
-        "last_modified": None,
-        "content_type": None
-    }
-    
-    # Try to get last modified date
-    modified_meta = soup.find("meta", {"name": "last-modified"})
-    if modified_meta and modified_meta.get("content"):
-        metadata["last_modified"] = modified_meta.get("content")
-    
-    # Try to get content type
-    content_type_meta = soup.find("meta", {"name": "content-type"})
-    if content_type_meta and content_type_meta.get("content"):
-        metadata["content_type"] = content_type_meta.get("content")
-    
-    return metadata
+    for i in range(0, len(words), words_per_chunk - overlap_words):
+        chunk = " ".join(words[i:i + words_per_chunk])
+        chunks.append(chunk)
+        
+    return chunks
 ```
 
 ## Extending the System
 
-### Creating a Custom Crawler
+### 1. Adding a New Content Extraction Strategy
 
-To create a specialized crawler for specific sites:
+To add a new content extraction strategy:
 
 ```python
-from src.crawling.enhanced_docs_crawler import CrawlConfig, crawl_url, process_and_store_document
-import asyncio
-import httpx
+# 1. Define your strategy in enhanced_docs_crawler.py
+def extract_content_with_custom_strategy(html, url):
+    # Your custom extraction logic here
+    return extracted_text
 
-async def custom_github_docs_crawler(openai_client, repository, source_id, source_name):
-    """Custom crawler for GitHub repository documentation."""
-    # Create configuration
-    config = CrawlConfig(
-        source_id=source_id,
-        source_name=source_name,
-        sitemap_url=f"https://github.com/{repository}",
-        chunk_size=3000,
-        max_concurrent_requests=5,
-        max_concurrent_api_calls=3,
-        url_patterns_include=["/wiki/", "/blob/main/docs/"],
-        url_patterns_exclude=["/issues/", "/pull/"]
-    )
-    
-    # Create batch processors
-    embedding_processor = EmbeddingBatchProcessor(openai_client, batch_size=20)
-    llm_processor = LLMBatchProcessor(openai_client)
-    
-    # Get docs from wiki and markdown files
-    wiki_urls = [f"https://github.com/{repository}/wiki"]
-    blob_urls = []
-    
-    # Get blob URLs (markdown files in docs directory)
-    async with httpx.AsyncClient() as client:
-        # GitHub API request to list files in docs directory
-        # Implementation details...
-    
-    # Process all URLs
-    urls = wiki_urls + blob_urls
-    crawl_semaphore = asyncio.Semaphore(config.max_concurrent_requests)
-    
-    tasks = []
-    for url in urls:
-        task = asyncio.create_task(crawl_url(
-            url=url,
-            config=config,
-            crawl_semaphore=crawl_semaphore,
-            embedding_processor=embedding_processor,
-            llm_processor=llm_processor
-        ))
-        tasks.append(task)
-    
-    # Wait for all tasks to complete
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    # Process results
-    success_count = sum(1 for r in results if r is True)
-    return success_count == len(urls)
+# 2. Add it to the extraction pipeline
+extraction_strategies = [
+    extract_content_html2text,
+    extract_main_content,
+    extract_raw_text,
+    extract_content_with_custom_strategy  # New strategy
+]
+
+# 3. The system will try each strategy in order until one succeeds
 ```
 
-### Adding Custom Content Processors
+### 2. Custom URL Filtering
 
-To add specialized content processing for specific document types:
-
-```python
-async def process_pdf_document(url, pdf_content, config, embedding_processor, llm_processor):
-    """Process a PDF document."""
-    try:
-        # Convert PDF to text (using PyPDF2, pdf2text, or similar)
-        # Implementation details...
-        
-        # Chunk the text
-        chunks = chunk_text(text_content, config.chunk_size)
-        
-        # Process chunks similar to HTML documents
-        chunk_data = [{"content": chunk, "url": url} for chunk in chunks]
-        titles_summaries = await llm_processor.generate_titles_and_summaries(chunk_data)
-        embeddings = await embedding_processor.get_embeddings(chunks)
-        
-        # Store chunks
-        stored_count = 0
-        for i, (chunk, title_summary, embedding) in enumerate(zip(chunks, titles_summaries, embeddings)):
-            # Create metadata
-            metadata = {
-                "source_id": config.source_id,
-                "source": config.source_name,
-                "url": url,
-                "chunk_number": i,
-                "page_title": f"Page {i+1}",
-                "document_type": "pdf",
-                "processed_at": datetime.now(timezone.utc).isoformat()
-            }
-            
-            # Store the chunk
-            chunk_id = await add_site_page(
-                url=url,
-                chunk_number=i,
-                title=title_summary["title"],
-                summary=title_summary["summary"],
-                content=chunk,
-                metadata=metadata,
-                embedding=embedding
-            )
-            
-            if chunk_id:
-                stored_count += 1
-        
-        return stored_count
-    except Exception as e:
-        enhanced_crawler_logger.structured_error(
-            f"Error processing PDF document: {e}",
-            error=e,
-            url=url
-        )
-        return 0
-```
-
-### Custom URL Filtering
-
-To implement specialized URL filtering:
+To implement custom URL filtering:
 
 ```python
-def advanced_url_filter(urls, config):
-    """Advanced URL filtering with priority scoring."""
-    filtered_urls = []
-    
-    # Score and filter URLs
-    for url in urls:
-        # Skip if explicitly excluded
-        if any(pattern in url for pattern in config.url_patterns_exclude):
-            continue
-        
-        # Always include if explicitly included
-        if any(pattern in url for pattern in config.url_patterns_include):
-            priority = 1  # Highest priority
-            filtered_urls.append((url, priority))
-            continue
-        
-        # Score other URLs based on heuristics
-        score = 0
-        
-        # Prefer shorter URLs (likely higher in hierarchy)
-        path_length = url.count("/")
-        if path_length < 4:
-            score += 2
-        elif path_length < 6:
-            score += 1
-        
-        # Prefer index pages
-        if url.endswith("index.html") or url.endswith("/"):
-            score += 2
-        
-        # Filter by minimum score
-        if score >= 1:
-            filtered_urls.append((url, score))
-    
-    # Sort by priority and return URLs
-    filtered_urls.sort(key=lambda x: x[1], reverse=True)
-    return [url for url, _ in filtered_urls]
+# Implement a custom URL filter function
+def custom_url_filter(url):
+    # Your filtering logic here
+    return url.endswith('.html') and 'deprecated' not in url
+
+# Set it in the CrawlConfig
+config = CrawlConfig(
+    # ...other parameters
+    url_filter=custom_url_filter
+)
 ```
 
 ## Best Practices
 
-### Optimizing Crawl Performance
+1. **Rate Limiting**: Always set reasonable concurrency limits to avoid overwhelming target servers:
+    ```python
+    config = CrawlConfig(
+        # ...other parameters
+        max_concurrent_requests=3  # Reasonable default
+    )
+    ```
 
-1. **Concurrency Tuning**: 
-   - Adjust `max_concurrent_requests` based on target server capabilities
-   - Start with conservative values (3-5) and increase gradually
-   - Monitor for rate limiting or server rejection
+2. **Error Handling**: Implement proper error handling and recovery:
+    ```python
+    try:
+        result = await crawl_documentation(config)
+    except Exception as e:
+        # Log the error
+        logging.error(f"Crawling failed: {e}")
+        # Take appropriate action
+    ```
 
-2. **Batching Strategies**:
-   - Batch embedding requests for better throughput
-   - Process document chunks in parallel
-   - Use appropriate batch sizes (10-50 items) for API calls
+3. **Content Validation**: Always validate extracted content:
+    ```python
+    if not content or len(content.strip()) < 50:
+        # Content is likely not valid
+        raise EmptyContentError("Extracted content is empty or too short")
+    ```
 
-3. **Memory Management**:
-   - Avoid loading entire documents into memory at once
-   - Process large documents in streaming mode when possible
-   - Implement backpressure when processing queues grow too large
+4. **Incremental Crawling**: Use incremental crawling for large sites:
+    ```python
+    config = CrawlConfig(
+        # ...other parameters
+        incremental=True,  # Only process new or updated pages
+        check_modified_since=True  # Check Last-Modified headers
+    )
+    ```
 
-4. **Rate Limit Handling**:
-   - Implement exponential backoff for rate limit errors
-   - Add jitter to retry intervals to avoid stampeding
-   - Set appropriate rate limits for different API endpoints
+5. **Store Raw HTML**: For debugging and alternative processing:
+    ```python
+    config = CrawlConfig(
+        # ...other parameters
+        store_raw_html=True  # Keep original HTML
+    )
+    ```
 
-### Content Processing
+6. **Monitor Performance**: Keep track of crawling metrics:
+    ```python
+    stats = get_crawl_stats(session_id)
+    print(f"Progress: {stats['progress_percentage']}%")
+    print(f"Success rate: {stats['success_rate']}%")
+    print(f"Average processing time: {stats['avg_processing_time']}s")
+    ```
 
-1. **Chunk Size Optimization**:
-   - Test different chunk sizes for your content type (1000-5000 chars)
-   - Preserve semantic boundaries (paragraphs, sections) when possible
-   - Consider content density when setting chunk size
+7. **Respect robots.txt**: Always honor robots.txt directives:
+    ```python
+    config = CrawlConfig(
+        # ...other parameters
+        respect_robots_txt=True  # Default is True
+    )
+    ```
 
-2. **Quality Control**:
-   - Validate content before processing (remove boilerplate, navigation)
-   - Filter out irrelevant or duplicate content
-   - Normalize whitespace and formatting
-
-3. **Metadata Enrichment**:
-   - Add as much metadata as possible to chunks for filtering
-   - Include hierarchical information (section, chapter, document)
-   - Store timestamps and version information
-
-### Error Handling
-
-1. **Resilient Crawling**:
-   - Continue processing despite individual page failures
-   - Implement proper error categorization and logging
-   - Add circuit breakers for systemic failures
-
-2. **Retry Strategies**:
-   - Use tenacity for robust retry handling
-   - Implement different retry policies for different error types
-   - Set appropriate timeout values for HTTP requests
-
-3. **Validation**:
-   - Validate URLs before crawling
-   - Check document size and type before processing
-   - Verify chunks meet minimum quality standards
-
-### Extending for New Content Types
-
-When adding support for new content types:
-
-1. **Parser Selection**:
-   - Choose appropriate parser libraries for the content type
-   - Implement content-specific extraction logic
-   - Normalize extracted content to a consistent format
-
-2. **Chunking Strategy**:
-   - Develop content-appropriate chunking strategies
-   - Preserve structural elements (headings, sections)
-   - Include appropriate cross-references between chunks
-
-3. **Metadata Extraction**:
-   - Extract content-specific metadata (author, version, etc.)
-   - Map metadata to standardized fields
-   - Store source-specific fields in extended metadata 
+8. **Use Word-Based Chunking**: For more semantic division of content:
+    ```python
+    config = CrawlConfig(
+        # ...other parameters
+        use_word_based_chunking=True,
+        chunk_words=1000,
+        overlap_words=100
+    )
+    ``` 
