@@ -1,3 +1,6 @@
+-- Increase maintenance_work_mem for index creation
+SET maintenance_work_mem = '1GB';
+
 -- Enable the pgvector extension
 CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -129,6 +132,12 @@ BEGIN
 END;
 $$;
 
+-- Drop all possible versions of hybrid_search
+DROP FUNCTION IF EXISTS hybrid_search(text, vector(1536), int, jsonb, float, float) CASCADE;
+DROP FUNCTION IF EXISTS hybrid_search(text, numeric[], int, jsonb, float, float) CASCADE;
+DROP FUNCTION IF EXISTS hybrid_search(text, numeric[], integer, jsonb, double precision, double precision) CASCADE;
+DROP FUNCTION IF EXISTS hybrid_search(text, numeric[], integer, unknown, numeric, numeric) CASCADE;
+
 -- Create hybrid search function that combines vector similarity with text search
 CREATE OR REPLACE FUNCTION hybrid_search (
   query_text text,
@@ -163,9 +172,9 @@ BEGIN
     content,
     metadata,
     1 - (site_pages.embedding <=> query_embedding) AS similarity,
-    ts_rank_cd(to_tsvector('english', content), to_tsquery('english', regexp_replace(query_text, '[^\w\s]', ' ', 'g'))) AS text_rank,
+    ts_rank_cd(to_tsvector('english', content), websearch_to_tsquery('english', query_text))::double precision AS text_rank,
     (vector_weight * (1 - (site_pages.embedding <=> query_embedding))) + 
-    ((1 - vector_weight) * ts_rank_cd(to_tsvector('english', content), to_tsquery('english', regexp_replace(query_text, '[^\w\s]', ' ', 'g')))) AS combined_score
+    ((1 - vector_weight) * ts_rank_cd(to_tsvector('english', content), websearch_to_tsquery('english', query_text))::double precision) AS combined_score
   FROM site_pages
   WHERE metadata @> filter
     AND (1 - (site_pages.embedding <=> query_embedding) > similarity_threshold
@@ -280,6 +289,9 @@ $$;
 -- Enable RLS on the documentation_sources table
 ALTER TABLE documentation_sources ENABLE ROW LEVEL SECURITY;
 
+-- Drop the existing policy if it exists
+DROP POLICY IF EXISTS "Allow public read access to documentation_sources" ON documentation_sources;
+
 -- Create a policy that allows anyone to read documentation_sources
 CREATE POLICY "Allow public read access to documentation_sources"
   ON documentation_sources
@@ -289,6 +301,9 @@ CREATE POLICY "Allow public read access to documentation_sources"
 
 -- Enable RLS on the site_pages table
 ALTER TABLE site_pages ENABLE ROW LEVEL SECURITY;
+
+-- Drop the existing policy if it exists
+DROP POLICY IF EXISTS "Allow public read access" ON site_pages;
 
 -- Create a policy that allows anyone to read
 CREATE POLICY "Allow public read access"

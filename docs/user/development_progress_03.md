@@ -174,3 +174,122 @@ Successfully resolved multiple critical issues affecting the UI and RAG chat fun
    - Improved session state management
 
 These comprehensive fixes have transformed the application from an error-prone prototype to a stable, user-friendly system that reliably performs its core function of allowing users to interact with their documentation sources through natural language queries.
+
+## RAG System Message Size Optimization
+**Date: March 22, 2025 | Time: 8:45 PM**
+
+Successfully resolved a critical issue with the RAG system where large queries were causing OpenAI API message size limit errors, resulting in more intelligent information retrieval and reliable system performance.
+
+### Key Issues Identified
+
+1. **OpenAI Message Size Overflow**:
+   - **Issue**: The system was generating API requests to OpenAI with message content exceeding the 1M character limit
+   - **Root Cause**: The pydantic-ai Agent was accumulating tool results in message history without proper content management
+   - **Error Pattern**: `Invalid 'messages[9].content': string too long. Expected a string with maximum length 1048576, but got a string with length 6394461 instead`
+
+2. **Excessive Information Gathering**:
+   - **Issue**: The agent was retrieving too much information across multiple tool calls
+   - **Root Cause**: System prompt instructed the agent to "always check" available pages and retrieve additional content
+   - **Impact**: Multiple sequential tool calls accumulated into oversized API messages
+
+### Diagnostic Implementation
+
+1. **Enhanced Logging System**:
+   - **Modified Files**: `src/ui/chat_ui.py`
+   - Implemented comprehensive API call monitoring
+   - Added OpenAI client constructor patching to catch all API calls
+   - Implemented detailed message size tracking and stack trace logging
+   - Added tool call reference counting in large messages
+
+2. **RAG Token Limiting Verification**:
+   - **Modified Files**: `src/rag/rag_expert.py`
+   - Added detailed size logging at each processing stage
+   - Verified token limiting was working at the individual tool level
+   - Confirmed issue was at the agent orchestration level, not in RAG retrieval
+
+### Implementation Solutions
+
+1. **Agent System Prompt Redesign**:
+   - **Modified Files**: `src/rag/rag_expert.py`
+   - **Key Changes**:
+     - Preserved original system prompt as reference comment
+     - Implemented structured retrieval strategy with clear decision points
+     - Added explicit guidance on when additional information is justified
+     - Set hard limit of 3 total retrieval operations per query
+
+2. **Decision Intelligence Improvements**:
+   - Added critical self-assessment step after initial RAG results
+   - Implemented specific criteria for when additional retrievals are warranted
+   - Emphasized quality over quantity in information gathering
+   - Provided clear guidelines on sufficiency assessment
+
+### Technical Highlights
+
+1. **Improved System Prompt**:
+   ```python
+   system_prompt = """
+   You are an expert documentation assistant with access to various documentation sources through a vector database. 
+   Your job is to assist with questions by retrieving and explaining information from the documentation.
+
+   IMPORTANT RULES:
+   ...
+
+   RETRIEVAL STRATEGY:
+   1. ALWAYS start with RAG (retrieve_relevant_documentation) as your first approach.
+   2. After seeing the RAG results, CAREFULLY ASSESS if they provide sufficient information.
+   3. Only if the RAG results are clearly insufficient, check available pages.
+   4. Retrieve additional specific page content ONLY when:
+      - The RAG results mention but don't fully explain a critical concept
+      - You need specific code examples not found in the initial results
+      - The initial results reference other pages that seem highly relevant
+   5. LIMIT your total retrievals to a maximum of 3 separate operations for any query.
+
+   Remember: Your goal is to provide accurate, focused answers based on the documentation.
+   Quality of information matters more than quantity. In most cases, the initial RAG results
+   will be sufficient to answer the user's question.
+   """
+   ```
+
+2. **API Call Diagnostic Implementation**:
+   ```python
+   # Patch the AsyncOpenAI constructor to intercept all client instances
+   def patch_async_openai_constructor():
+       global original_async_openai_init
+       from openai import AsyncOpenAI
+       
+       if original_async_openai_init is None:
+           original_async_openai_init = AsyncOpenAI.__init__
+           
+           def patched_init(self, *args, **kwargs):
+               # Call the original constructor
+               original_async_openai_init(self, *args, **kwargs)
+               
+               # Patch this client instance
+               patch_openai_client(self)
+               logger.info(f"🔧 PATCHED: New AsyncOpenAI client instance created and patched")
+   ```
+
+### Impact and Results
+
+1. **Improved System Reliability**:
+   - Eliminated OpenAI API message size overflow errors
+   - Enhanced agent decision-making about information sufficiency
+   - Reduced unnecessary tool calls and content accumulation
+   - Maintained retrieval quality while improving efficiency
+
+2. **Better User Experience**:
+   - More focused and relevant responses
+   - Faster response generation with fewer unnecessary retrievals
+   - No more errors on broad or complex queries
+
+3. **Technical Insights**:
+   - Identified critical interaction patterns between agent frameworks and LLM API limits
+   - Demonstrated the importance of proper prompt engineering for agent decision-making
+   - Developed reusable diagnostics for monitoring API call patterns
+
+4. **Future-Proofing**:
+   - Solution addresses the root cause at the agent intelligence level
+   - No arbitrary token limits that might restrict valid information retrieval
+   - More efficient system that makes better use of available context window
+
+This optimized approach ensures the RAG system can handle complex queries efficiently while avoiding API limits, providing a better foundation for scaling the system to larger documentation sets.

@@ -12,7 +12,7 @@ import argparse
 from dotenv import load_dotenv
 
 # Add the project root to the Python path
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import the database setup function
 from src.db.schema import setup_database, check_pgvector_extension, check_tables_exist, create_schema_from_file
@@ -47,7 +47,7 @@ def main():
         sys.exit(0)
     
     # Create schema from file
-    schema_path = os.path.join(os.path.dirname(__file__), "data", "vector_schema_v2.sql")
+    schema_path = os.path.join(os.path.dirname(__file__), "..", "data", "vector_schema_v2.sql")
     if not os.path.exists(schema_path):
         print(f"Error: Schema file not found at {schema_path}")
         sys.exit(1)
